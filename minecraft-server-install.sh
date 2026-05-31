@@ -163,11 +163,12 @@ user_config() {
         MC_SEED="${input:-$MC_SEED}"
 
         read -rp "  正版验证 (true/false) [${MC_ONLINE_MODE}]: " input
-        MC_ONLINE_ENABLED="${input:-$MC_ONLINE_MODE}"
+        MC_ONLINE_MODE="${input:-$MC_ONLINE_MODE}"
     fi
 
     # 自动生成 RCON 密码
-    MC_RCON_PASSWORD=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | head -c 16)
+    MC_RCON_PASSWORD=$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-mc$(date +%s)}"
 
     echo ""
     info "最终配置:"
