@@ -191,7 +191,7 @@ install_java() {
 
     if command -v java &>/dev/null; then
         local java_version
-        java_version=$(java -version 2>&1 | head -1 | grep -oP '\d+' | head -1)
+        java_version=$(set +o pipefail; java -version 2>&1 | head -1 | grep -oP '\d+' | head -1 || true)
         if [[ $java_version -ge $required_java ]]; then
             info "Java ${java_version} 已安装，满足要求"
             return
@@ -268,7 +268,7 @@ install_java() {
     fi
 
     if command -v java &>/dev/null; then
-        info "Java 安装完成: $(java -version 2>&1 | head -1)"
+        info "Java 安装完成: $(set +o pipefail; java -version 2>&1 | head -1 || echo "unknown")"
     else
         error "Java 安装失败"
         exit 1
@@ -308,8 +308,8 @@ download_server() {
 
             if [[ "$use_bmcl" == "true" ]]; then
                 # 国内: BMCL 镜像，直接下载最新版
-                paper_version=$(curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
-                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null)
+                paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
 
                 if [[ -n "$paper_version" ]]; then
                     paper_url="https://bmclapidoc.bangbang93.com/paper/${paper_version}/latest/download"
@@ -323,16 +323,16 @@ download_server() {
 
             # 国外或 BMCL 失败: 官方 PaperMC API
             if [[ "$download_ok" != "true" ]]; then
-                paper_version=$(curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null)
+                paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
 
                 if [[ -z "$paper_version" ]]; then
                     paper_version="1.21.4"
                 fi
 
                 local paper_build
-                paper_build=$(curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null)
+                paper_build=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null || true)
 
                 if [[ -n "$paper_build" ]]; then
                     paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
@@ -360,8 +360,8 @@ download_server() {
             if [[ "$use_bmcl" == "true" ]]; then
                 # 国内: BMCL 镜像
                 local mc_version
-                mc_version=$(curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
-                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null)
+                mc_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
 
                 if [[ -n "$mc_version" ]]; then
                     server_jar_url="https://bmclapidoc.bangbang93.com/version/${mc_version}/server"
@@ -372,7 +372,7 @@ download_server() {
             # 国外或 BMCL 失败: 官方 Mojang API
             if [[ -z "$server_jar_url" ]]; then
                 local version_json_url
-                version_json_url=$(curl -sL --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
+                version_json_url=$(set +o pipefail; curl -sL --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
                     python3 -c "
 import sys,json
 d=json.load(sys.stdin)
@@ -381,11 +381,11 @@ for v in d['versions']:
     if v['id']==latest:
         print(v['url'])
         break
-" 2>/dev/null)
+" 2>/dev/null || true)
 
                 if [[ -n "$version_json_url" ]]; then
-                    server_jar_url=$(curl -sL --max-time 15 "$version_json_url" 2>/dev/null | \
-                        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null)
+                    server_jar_url=$(set +o pipefail; curl -sL --max-time 15 "$version_json_url" 2>/dev/null | \
+                        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null || true)
                 fi
             fi
 
