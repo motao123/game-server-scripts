@@ -101,8 +101,20 @@ check_resources() {
 
     info "CPU: ${cpu_cores}核 | 内存: ${mem_total}GB | 磁盘: ${disk_free}GB"
 
+    if [[ $mem_total -lt 2 ]]; then
+        error "内存不足 2GB，无法运行 Minecraft 服务器"
+        exit 1
+    fi
+
+    # 自动根据系统内存调整 JVM 内存 (系统内存 - 1GB，最低 512M)
+    local jvm_mem=$((mem_total - 1))
+    [[ $jvm_mem -lt 1 ]] && jvm_mem=1
+    MC_MEMORY="${jvm_mem}G"
+    MC_MEMORY_MIN="$((jvm_mem / 2))G"
+    [[ "$MC_MEMORY_MIN" == "0G" ]] && MC_MEMORY_MIN="512M"
+
     if [[ $mem_total -lt 4 ]]; then
-        warn "内存不足 4GB，建议至少 4GB"
+        warn "内存不足 4GB，已自动调整 JVM 内存为 ${MC_MEMORY}，建议升级到 4GB+"
     fi
 }
 
@@ -556,7 +568,7 @@ generate_configs() {
 eula=true
 EOF
 
-    # 首次启动以生成配置文件
+    # 首次启动以生成配置文件 (用较低内存避免 OOM)
     info "首次启动以生成配置文件 (首次需要下载依赖，可能需要 1-3 分钟)..."
     cd "$MC_DIR"
 
@@ -571,8 +583,8 @@ EOF
         *)       jar_file="server.jar" ;;
     esac
 
-    # 后台启动，等待 server.properties 生成后自动停止
-    sudo -u "$MC_USER" java -Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY} -jar "$jar_file" --nogui &
+    # 后台启动，等待 server.properties 生成后自动停止 (用最低内存避免 OOM)
+    sudo -u "$MC_USER" java -Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY_MIN} -jar "$jar_file" --nogui &
     local java_pid=$!
 
     # 等待 server.properties 生成 (最多 180 秒)
