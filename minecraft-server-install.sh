@@ -214,28 +214,30 @@ install_java() {
             ;;
     esac
 
-    # 方式2: 包管理器没有 Java 21，从 Adoptium 下载安装
+    # 方式2: 包管理器没有 Java 21，从网上下载安装
     if [[ "$installed" != "true" ]] || ! command -v java &>/dev/null; then
         warn "包管理器未找到 Java ${required_java}，准备下载..."
 
-        local arch
+        local arch arch_azul
         arch=$(uname -m)
         case "$arch" in
-            x86_64)  arch="x64" ;;
-            aarch64) arch="a64" ;;
+            x86_64)  arch="x64"; arch_azul="linux_x64" ;;
+            aarch64) arch="a64";  arch_azul="linux_aarch64" ;;
             *)       error "不支持的架构: $arch"; exit 1 ;;
         esac
 
-        # 自动检测网络环境，选择最近的下载源
-        local java_urls=()
+        # 多源下载: Azul Zulu (全球CDN) → 清华镜像 → 官方 Adoptium
+        local java_urls=(
+            "https://cdn.azul.com/zulu/bin/zulu21.38.21-ca-jre21.0.5-${arch_azul}.tar.gz"
+        )
+        # 检测国内网络，加入清华镜像
         if curl -sL --connect-timeout 3 --max-time 5 "https://mirrors.tuna.tsinghua.edu.cn" &>/dev/null; then
-            info "检测到国内网络，使用清华镜像源"
+            info "检测到国内网络，加入清华镜像源"
             java_urls+=("https://mirrors.tuna.tsinghua.edu.cn/Adoptium/${required_java}/jre/${arch}_linux/latest")
         fi
-        # 官方源作为备用
         java_urls+=("https://api.adoptium.net/v3/binary/latest/${required_java}/ga/linux/${arch}/jre/hotspot/normal/eclipse?project=jdk")
 
-        local tmp_java="/tmp/temurin-jre.tar.gz"
+        local tmp_java="/tmp/java-jre.tar.gz"
         local download_ok=false
 
         for url in "${java_urls[@]}"; do
@@ -253,7 +255,7 @@ install_java() {
             exit 1
         fi
 
-        local java_dir="/opt/java/temurin-${required_java}"
+        local java_dir="/opt/java/java-${required_java}"
         mkdir -p "$java_dir"
         tar -xzf "$tmp_java" -C "$java_dir" --strip-components=1
         rm -f "$tmp_java"
@@ -262,7 +264,7 @@ install_java() {
         ln -sf "${java_dir}/bin/java" /usr/local/bin/java
         export PATH="${java_dir}/bin:$PATH"
 
-        info "Temurin JRE ${required_java} 安装完成: ${java_dir}"
+        info "Java ${required_java} 安装完成: ${java_dir}"
     fi
 
     if command -v java &>/dev/null; then
