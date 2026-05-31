@@ -572,7 +572,7 @@ create_start_script() {
 #!/bin/bash
 cd "${MC_DIR}"
 
-exec java \\
+exec screen -DmS mc-server java \\
     -Xms${MC_MEMORY_MIN} \\
     -Xmx${MC_MEMORY} \\
     ${JVM_FLAGS[*]} \\
@@ -793,11 +793,25 @@ cmd_memory() {
 
 cmd_info() {
     local ip=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+    # 从日志获取版本信息
+    local mc_version
+    mc_version=$(journalctl -u "$SERVICE" --no-pager 2>/dev/null | grep -oP 'version \K[0-9]+\.[0-9]+\.[0-9]+' | tail -1)
+    local server_jar
+    if [[ -f "${MC_DIR}/paper.jar" ]]; then
+        server_jar="Paper"
+    elif [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
+        server_jar="Fabric"
+    elif [[ -f "${MC_DIR}/server.jar" ]]; then
+        server_jar="Vanilla"
+    else
+        server_jar="Unknown"
+    fi
     echo -e "${CYAN}=== 服务器信息 ===${NC}"
+    echo "服务器类型:  ${server_jar}"
+    echo "游戏版本:    ${mc_version:-未知}"
     echo "服务器地址:  ${ip}:${MC_PORT}"
     echo "RCON端口:    ${RCON_PORT}"
     echo "RCON密码:    ${RCON_PASSWORD}"
-    echo "服务器类型:  ${SERVER_TYPE}"
     echo "状态:        $(systemctl is-active "$SERVICE")"
     echo "配置文件:    ${MC_DIR}/server.properties"
     echo "世界目录:    ${MC_DIR}/world"
@@ -1177,6 +1191,7 @@ case "${1:-help}" in
     config)   cmd_config ;;
     memory)   cmd_memory ;;
     info)     cmd_info ;;
+    version)  cmd_info ;;
     plugin)   shift; cmd_plugin "$@" ;;
     datapack) shift; cmd_datapack "$@" ;;
     resourcepack) shift; cmd_resourcepack "$@" ;;
