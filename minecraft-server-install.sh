@@ -303,8 +303,12 @@ download_server() {
 
     case $SERVER_TYPE in
         paper)
-            local paper_version paper_url
+            local paper_version paper_url paper_build
             local download_ok=false
+
+            # 默认版本 (已知可用的稳定版)
+            local default_version="1.21.4"
+            local default_build="232"
 
             if [[ "$use_bmcl" == "true" ]]; then
                 # 国内: BMCL 镜像，直接下载最新版
@@ -312,43 +316,58 @@ download_server() {
                     python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
 
                 if [[ -n "$paper_version" ]]; then
+                    # BMCL 有时返回不存在的版本号，先验证文件大小
                     paper_url="https://bmclapidoc.bangbang93.com/paper/${paper_version}/latest/download"
                     info "BMCL Paper 版本: ${paper_version}"
                     jar_file="${MC_DIR}/paper.jar"
                     if curl -sL --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                         download_ok=true
+                    else
+                        warn "BMCL 下载失败或文件异常，尝试官方源..."
+                        rm -f "$jar_file"
                     fi
                 fi
             fi
 
-            # 国外或 BMCL 失败: 官方 PaperMC API
+            # 官方 PaperMC API (国内失败或国外)
             if [[ "$download_ok" != "true" ]]; then
                 paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
                     python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
 
                 if [[ -z "$paper_version" ]]; then
-                    paper_version="1.21.4"
+                    paper_version="$default_version"
                 fi
 
-                local paper_build
                 paper_build=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
                     python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null || true)
 
-                if [[ -n "$paper_build" ]]; then
-                    paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
-                else
-                    paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/latest/downloads/paper-${paper_version}-latest.jar"
+                if [[ -z "$paper_build" ]]; then
+                    # API 也失败，使用默认版本的已知构建
+                    paper_version="$default_version"
+                    paper_build="$default_build"
                 fi
 
-                info "PaperMC API 版本: ${paper_version}, 构建: ${paper_build:-latest}"
+                paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
+                info "PaperMC 版本: ${paper_version}, 构建: ${paper_build}"
                 jar_file="${MC_DIR}/paper.jar"
                 if curl -sL --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                     download_ok=true
                 fi
             fi
 
+            # 最终兜底: 直接用默认版本的最新构建
+            if [[ "$download_ok" != "true" ]]; then
+                warn "PaperMC API 下载失败，使用默认版本..."
+                paper_url="https://api.papermc.io/v2/projects/paper/versions/${default_version}/builds/latest/downloads/paper-${default_version}-latest.jar"
+                jar_file="${MC_DIR}/paper.jar"
+                if curl -sL --max-time 300 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                    download_ok=true
+                fi
+            fi
+
             if [[ "$download_ok" != "true" ]]; then
                 error "Paper 下载失败，请检查网络或手动下载"
+                error "手动下载地址: https://papermc.io/downloads/paper"
                 exit 1
             fi
             ;;
