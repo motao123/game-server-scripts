@@ -186,6 +186,13 @@ user_config() {
     echo ""
 }
 
+# ==================== 安装依赖 ====================
+install_deps() {
+    info "安装依赖..."
+    apt-get update -y
+    apt-get install -y screen curl wget jq
+}
+
 # ==================== 安装 Java ====================
 install_java() {
     info "检查 Java 环境..."
@@ -1534,17 +1541,18 @@ main() {
     user_config
 
     echo -e "\n${CYAN}${BOLD}即将执行部署步骤:${NC}"
-    echo "  [1] 安装 Java 21"
-    echo "  [2] 创建用户和目录"
-    echo "  [3] 下载 ${SERVER_TYPE} 服务器"
-    echo "  [4] 生成配置文件"
-    echo "  [5] 写入优化配置"
-    echo "  [6] 创建启动脚本"
-    echo "  [7] 创建 systemd 服务"
-    echo "  [8] 创建管理脚本"
-    echo "  [9] 创建自动备份"
-    echo "  [10] 配置防火墙"
-    echo "  [11] 启动服务器"
+    echo "  [1] 安装依赖"
+    echo "  [2] 安装 Java 21"
+    echo "  [3] 创建用户和目录"
+    echo "  [4] 下载 ${SERVER_TYPE} 服务器"
+    echo "  [5] 生成配置文件"
+    echo "  [6] 写入优化配置"
+    echo "  [7] 创建启动脚本"
+    echo "  [8] 创建 systemd 服务"
+    echo "  [9] 创建管理脚本"
+    echo "  [10] 创建自动备份"
+    echo "  [11] 配置防火墙"
+    echo "  [12] 启动服务器"
     echo ""
     echo ""
     read -rp "回车开始部署 / 输入 n 取消: " confirm
@@ -1553,6 +1561,7 @@ main() {
         exit 0
     fi
 
+    install_deps
     install_java
     setup_user_and_dir
     download_server
