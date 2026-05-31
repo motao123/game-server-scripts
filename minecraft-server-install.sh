@@ -202,20 +202,50 @@ install_java() {
 
     info "安装 Java ${required_java}..."
 
+    # 方式1: 尝试从系统包管理器安装
+    local installed=false
     case $OS in
         ubuntu|debian)
             apt-get update -y
-            apt-get install -y openjdk-${required_java}-jre-headless
+            apt-get install -y openjdk-${required_java}-jre-headless 2>/dev/null && installed=true
             ;;
         centos|rhel|rocky|almalinux)
-            yum install -y java-${required_java}-openjdk
-            ;;
-        *)
-            apt-get update -y
-            apt-get install -y openjdk-${required_java}-jre-headless || \
-            apt-get install -y default-jre-headless
+            yum install -y java-${required_java}-openjdk 2>/dev/null && installed=true
             ;;
     esac
+
+    # 方式2: 包管理器没有 Java 21，从 Adoptium 下载安装
+    if [[ "$installed" != "true" ]] || ! command -v java &>/dev/null; then
+        warn "包管理器未找到 Java ${required_java}，从 Adoptium 下载..."
+
+        local arch
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64)  arch="x64" ;;
+            aarch64) arch="a64" ;;
+            *)       error "不支持的架构: $arch"; exit 1 ;;
+        esac
+
+        local java_url="https://api.adoptium.net/v3/binary/latest/${required_java}/ga/linux/${arch}/jre/hotspot/normal/eclipse?project=jdk"
+        local tmp_java="/tmp/temurin-jre.tar.gz"
+
+        info "下载 Temurin JRE ${required_java} (${arch})..."
+        curl -sL --max-time 180 -o "$tmp_java" "$java_url" || {
+            error "下载 Java 失败，请检查网络或手动安装 Java ${required_java}"
+            exit 1
+        }
+
+        local java_dir="/opt/java/temurin-${required_java}"
+        mkdir -p "$java_dir"
+        tar -xzf "$tmp_java" -C "$java_dir" --strip-components=1
+        rm -f "$tmp_java"
+
+        # 创建软链接
+        ln -sf "${java_dir}/bin/java" /usr/local/bin/java
+        export PATH="${java_dir}/bin:$PATH"
+
+        info "Temurin JRE ${required_java} 安装完成: ${java_dir}"
+    fi
 
     if command -v java &>/dev/null; then
         info "Java 安装完成: $(java -version 2>&1 | head -1)"
