@@ -1,7 +1,7 @@
 #!/bin/bash
 #============================================================
 # Minecraft Java Edition 专用服务器一键部署脚本
-# 支持: 官方原版 / Paper (高性能分支)
+# 支持: Paper / Vanilla / Fabric / Forge
 # 适用于: Ubuntu 22.04+ / Debian 11+
 #============================================================
 
@@ -22,7 +22,7 @@ MC_WORLD_DIR="${MC_DIR}/world"
 SERVICE_NAME="mc-server"
 MANAGER_SCRIPT="/usr/local/bin/mc-manager"
 
-# 服务器类型: vanilla (官方原版) 或 paper (高性能)
+# 服务器类型: paper / vanilla / fabric / forge
 SERVER_TYPE="paper"
 
 # 内存配置 (根据玩家数量调整)
@@ -111,15 +111,19 @@ user_config() {
     echo -e "\n${CYAN}${BOLD}========== 服务器配置 ==========${NC}\n"
 
     echo -e "  ${CYAN}选择服务器类型:${NC}"
-    echo -e "  ┌─────────────────────────────────────────────┐"
-    echo -e "  │  1) Paper (推荐) - 高性能分支，插件支持      │"
-    echo -e "  │  2) Vanilla  - 官方原版，纯净体验            │"
-    echo -e "  └─────────────────────────────────────────────┘"
+    echo -e "  ┌─────────────────────────────────────────────────────────┐"
+    echo -e "  │  1) Paper (推荐) - 高性能分支，支持 Bukkit/Spigot 插件  │"
+    echo -e "  │  2) Vanilla  - 官方原版，纯净体验                       │"
+    echo -e "  │  3) Fabric   - 轻量 Mod 加载器，适合客户端 Mod 联机     │"
+    echo -e "  │  4) Forge    - 经典 Mod 加载器，Mod 数量最多             │"
+    echo -e "  └─────────────────────────────────────────────────────────┘"
     echo ""
-    read -rp "  请选择 [1/2, 默认1]: " type_choice
+    read -rp "  请选择 [1/2/3/4, 默认1]: " type_choice
 
     case "${type_choice:-1}" in
         2) SERVER_TYPE="vanilla" ;;
+        3) SERVER_TYPE="fabric" ;;
+        4) SERVER_TYPE="forge" ;;
         *) SERVER_TYPE="paper" ;;
     esac
 
@@ -424,6 +428,112 @@ for v in d['versions']:
                 exit 1
             fi
             ;;
+
+        fabric)
+            local fabric_version="0.16.14"
+            local loader_version="1.0.1"
+            local mc_version="1.21.4"
+            local download_ok=false
+
+            # 获取最新 MC 版本
+            local latest_mc
+            latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null || true)
+            [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+
+            info "Fabric 版本: ${fabric_version}, MC: ${mc_version}"
+
+            # 方式1: 通过 Fabric API 下载服务端 jar
+            local fabric_url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/${fabric_version}/${loader_version}/server/jar"
+            jar_file="${MC_DIR}/fabric-server.jar"
+
+            if curl -sL --max-time 180 -o "$jar_file" "$fabric_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 500000 ]]; then
+                download_ok=true
+            fi
+
+            # 方式2: 使用安装器
+            if [[ "$download_ok" != "true" ]]; then
+                warn "直接下载失败，尝试使用安装器..."
+                local installer_jar="/tmp/fabric-installer.jar"
+                curl -sL --max-time 60 -o "$installer_jar" "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar"
+                if [[ -f "$installer_jar" ]] && [[ $(stat -c%s "$installer_jar" 2>/dev/null || echo 0) -gt 10000 ]]; then
+                    sudo -u "$MC_USER" java -jar "$installer_jar" server -dir "$MC_DIR" -mcversion "$mc_version" -loader "$fabric_version" -downloadMinecraft 2>/dev/null
+                    if [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
+                        jar_file="${MC_DIR}/fabric-server.jar"
+                        download_ok=true
+                    fi
+                    rm -f "$installer_jar"
+                fi
+            fi
+
+            if [[ "$download_ok" != "true" ]]; then
+                error "Fabric 服务器下载失败"
+                error "手动下载: https://fabricmc.net/use/server/"
+                exit 1
+            fi
+            ;;
+
+        forge)
+            local mc_version="1.21.4"
+            local forge_version="54.0.16"
+            local download_ok=false
+
+            # 获取最新 MC 版本
+            local latest_mc
+            latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); versions=sorted(d.keys(), reverse=True); print(versions[0])" 2>/dev/null || true)
+            [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+
+            # 获取该 MC 版本的最新 Forge 版本
+            local forge_versions_json
+            forge_versions_json=$(set +o pipefail; curl -sL --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
+                python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+v='${mc_version}'
+if v in d:
+    builds=d[v]
+    print(builds[-1] if isinstance(builds, list) else builds)
+" 2>/dev/null || true)
+            [[ -n "$forge_versions_json" ]] && forge_version="$forge_versions_json"
+
+            info "Forge 版本: ${mc_version}-${forge_version}"
+
+            # 下载 Forge 安装器
+            local installer_jar="/tmp/forge-installer.jar"
+            local forge_url="https://maven.minecraftforge.net/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-installer.jar"
+
+            curl -sL --max-time 120 -o "$installer_jar" "$forge_url"
+
+            if [[ ! -f "$installer_jar" ]] || [[ $(stat -c%s "$installer_jar" 2>/dev/null || echo 0) -lt 100000 ]]; then
+                error "Forge 安装器下载失败"
+                error "手动下载: https://files.minecraftforge.net/"
+                exit 1
+            fi
+
+            # 安装 Forge 服务端
+            info "安装 Forge 服务端 (这可能需要几分钟)..."
+            cd "$MC_DIR"
+            sudo -u "$MC_USER" java -jar "$installer_jar" --installServer . 2>/dev/null
+            rm -f "$installer_jar"
+
+            # Forge 安装后会生成 forge-xxx.jar 或 run.sh
+            local forge_jar
+            forge_jar=$(ls "${MC_DIR}"/forge-*.jar 2>/dev/null | head -1)
+            if [[ -n "$forge_jar" ]]; then
+                jar_file="$forge_jar"
+                download_ok=true
+            elif [[ -f "${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar" ]]; then
+                jar_file="${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar"
+                download_ok=true
+            fi
+
+            if [[ "$download_ok" != "true" ]]; then
+                error "Forge 安装失败"
+                error "手动下载: https://files.minecraftforge.net/"
+                exit 1
+            fi
+            ;;
     esac
 
     info "服务器下载完成: $jar_file ($(du -h "$jar_file" | cut -f1))"
@@ -562,11 +672,21 @@ create_start_script() {
     info "创建启动脚本..."
 
     local jar_file
-    if [[ "$SERVER_TYPE" == "paper" ]]; then
-        jar_file="paper.jar"
-    else
-        jar_file="server.jar"
-    fi
+    local extra_args="--nogui"
+    case "$SERVER_TYPE" in
+        paper)   jar_file="paper.jar" ;;
+        vanilla) jar_file="server.jar" ;;
+        fabric)  jar_file="fabric-server.jar" ;;
+        forge)
+            # Forge 安装后 jar 文件名带版本号，需要查找
+            jar_file=$(ls "${MC_DIR}"/forge-*.jar 2>/dev/null | head -1)
+            if [[ -z "$jar_file" ]]; then
+                jar_file="forge-server.jar"
+            else
+                jar_file=$(basename "$jar_file")
+            fi
+            ;;
+    esac
 
     cat > "${MC_DIR}/start.sh" << STARTSCRIPT
 #!/bin/bash
@@ -576,7 +696,7 @@ exec screen -DmS mc-server java \\
     -Xms${MC_MEMORY_MIN} \\
     -Xmx${MC_MEMORY} \\
     ${JVM_FLAGS[*]} \\
-    -jar ${jar_file} --nogui
+    -jar ${jar_file} ${extra_args}
 STARTSCRIPT
 
     chmod +x "${MC_DIR}/start.sh"
@@ -756,25 +876,72 @@ cmd_update() {
     echo -e "${CYAN}更新服务器...${NC}"
     systemctl stop "$SERVICE"
 
-    local jar_file="${MC_DIR}/paper.jar"
-    local current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+    # 自动检测服务器类型
+    local server_type="paper"
+    if [[ -f "${MC_DIR}/paper.jar" ]]; then
+        server_type="paper"
+    elif [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
+        server_type="fabric"
+    elif ls "${MC_DIR}"/forge-*.jar &>/dev/null; then
+        server_type="forge"
+    elif [[ -f "${MC_DIR}/server.jar" ]]; then
+        server_type="vanilla"
+    fi
 
-    # 重新下载
-    local paper_version=$(curl -sL "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null)
-    local paper_build=$(curl -sL "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
-        python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null)
-    local paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
+    local current_hash
+    local new_hash
+    local updated=false
 
-    cp "$jar_file" "${jar_file}.bak"
-    curl -sL -o "$jar_file" "$paper_url"
-
-    local new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+    case "$server_type" in
+        paper)
+            local jar_file="${MC_DIR}/paper.jar"
+            current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+            local paper_version=$(curl -sL "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null)
+            local paper_build=$(curl -sL "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null)
+            local paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
+            cp "$jar_file" "${jar_file}.bak"
+            curl -sL -o "$jar_file" "$paper_url"
+            new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+            [[ "$current_hash" != "$new_hash" ]] && updated=true
+            ;;
+        vanilla)
+            local jar_file="${MC_DIR}/server.jar"
+            current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+            local version_json_url=$(curl -sL "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); latest=d['latest']['release']; [print(v['url']) for v in d['versions'] if v['id']==latest]" 2>/dev/null)
+            local server_url=$(curl -sL "$version_json_url" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['downloads']['server']['url'])" 2>/dev/null)
+            cp "$jar_file" "${jar_file}.bak"
+            curl -sL -o "$jar_file" "$server_url"
+            new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+            [[ "$current_hash" != "$new_hash" ]] && updated=true
+            ;;
+        fabric)
+            local jar_file="${MC_DIR}/fabric-server.jar"
+            current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+            local mc_version=$(curl -sL "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
+                python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null)
+            local fabric_url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/0.16.14/1.0.1/server/jar"
+            cp "$jar_file" "${jar_file}.bak"
+            curl -sL -o "$jar_file" "$fabric_url"
+            new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
+            [[ "$current_hash" != "$new_hash" ]] && updated=true
+            ;;
+        forge)
+            echo -e "${YELLOW}Forge 更新需要重新安装，请手动操作:${NC}"
+            echo -e "  1. 下载新版安装器: https://files.minecraftforge.net/"
+            echo -e "  2. java -jar forge-installer.jar --installServer ${MC_DIR}"
+            echo -e "  3. 更新 start.sh 中的 jar 文件名"
+            systemctl start "$SERVICE"
+            return
+            ;;
+    esac
 
     systemctl start "$SERVICE"
 
-    if [[ "$current_hash" != "$new_hash" ]]; then
-        echo -e "${GREEN}更新完成 (已从 ${paper_build} 更新)${NC}"
+    if [[ "$updated" == "true" ]]; then
+        echo -e "${GREEN}更新完成${NC}"
     else
         echo -e "${GREEN}已是最新版本${NC}"
     fi
@@ -801,6 +968,8 @@ cmd_info() {
         server_jar="Paper"
     elif [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
         server_jar="Fabric"
+    elif ls "${MC_DIR}"/forge-*.jar &>/dev/null; then
+        server_jar="Forge"
     elif [[ -f "${MC_DIR}/server.jar" ]]; then
         server_jar="Vanilla"
     else
