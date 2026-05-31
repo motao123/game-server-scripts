@@ -166,8 +166,8 @@ user_config() {
         MC_ONLINE_MODE="${input:-$MC_ONLINE_MODE}"
     fi
 
-    # 自动生成 RCON 密码
-    MC_RCON_PASSWORD=$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
+    # 自动生成 RCON 密码（临时关闭 pipefail 防止 SIGPIPE 导致脚本退出）
+    MC_RCON_PASSWORD=$(set +o pipefail; head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
     MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-mc$(date +%s)}"
 
     echo ""
