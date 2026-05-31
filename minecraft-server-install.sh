@@ -866,8 +866,9 @@ main() {
     echo "  [10] 配置防火墙"
     echo "  [11] 启动服务器"
     echo ""
-    read -rp "确认开始部署? (y/N): " confirm
-    if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+    echo ""
+    read -rp "回车开始部署 / 输入 n 取消: " confirm
+    if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
         echo "已取消"
         exit 0
     fi

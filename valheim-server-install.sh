@@ -451,8 +451,9 @@ main() {
     echo "  [9] 配置防火墙"
     echo "  [10] 启动服务器"
     echo ""
-    read -rp "确认部署? (y/N): " confirm
-    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && { echo "已取消"; exit 0; }
+    echo ""
+    read -rp "回车开始部署 / 输入 n 取消: " confirm
+    [[ "$confirm" == "n" || "$confirm" == "N" ]] && { echo "已取消"; exit 0; }
 
     install_deps
     install_steamcmd
