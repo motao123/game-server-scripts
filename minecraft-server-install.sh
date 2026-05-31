@@ -550,28 +550,41 @@ eula=true
 EOF
 
     # 首次启动以生成配置文件
-    info "首次启动以生成默认配置..."
+    info "首次启动以生成配置文件 (首次需要下载依赖，可能需要 1-3 分钟)..."
     cd "$MC_DIR"
 
     local jar_file
-    if [[ "$SERVER_TYPE" == "paper" ]]; then
-        jar_file="paper.jar"
-    else
-        jar_file="server.jar"
-    fi
+    case "$SERVER_TYPE" in
+        paper)   jar_file="paper.jar" ;;
+        fabric)  jar_file="fabric-server.jar" ;;
+        forge)
+            jar_file=$(ls forge-*.jar 2>/dev/null | head -1)
+            jar_file="${jar_file:-server.jar}"
+            ;;
+        *)       jar_file="server.jar" ;;
+    esac
 
-    sudo -u "$MC_USER" timeout 60 java -Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY} -jar "$jar_file" --nogui || true
+    # 后台启动，等待 server.properties 生成后自动停止
+    sudo -u "$MC_USER" java -Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY} -jar "$jar_file" --nogui &
+    local java_pid=$!
 
-    # 等待配置文件生成
+    # 等待 server.properties 生成 (最多 180 秒)
     local wait_count=0
-    while [[ ! -f "${MC_DIR}/server.properties" ]] && [[ $wait_count -lt 30 ]]; do
+    while [[ ! -f "${MC_DIR}/server.properties" ]] && [[ $wait_count -lt 90 ]]; do
         sleep 2
         wait_count=$((wait_count + 1))
+        # 检查 java 进程是否还活着
+        if ! kill -0 "$java_pid" 2>/dev/null; then
+            break
+        fi
     done
 
     # 停止服务器
-    pkill -f "java.*${jar_file}" 2>/dev/null || true
+    kill "$java_pid" 2>/dev/null || true
     sleep 3
+    kill -9 "$java_pid" 2>/dev/null || true
+    pkill -f "java.*${jar_file}" 2>/dev/null || true
+    sleep 2
 
     chown -R "${MC_USER}:${MC_USER}" "$MC_DIR"
 }
