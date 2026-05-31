@@ -846,7 +846,7 @@ cmd_logs()    { journalctl -u "$SERVICE" -f --no-pager; }
 
 cmd_console() {
     echo -e "${YELLOW}进入服务器控制台，按 Ctrl+A 然后按 D 退出${NC}"
-    screen -r mc-server 2>/dev/null || echo "服务器未在 screen 中运行"
+    su - minecraft -c "screen -r mc-server" 2>/dev/null || echo "服务器未在 screen 中运行"
 }
 
 cmd_cmd() {
@@ -854,8 +854,7 @@ cmd_cmd() {
         echo "用法: mc-manager cmd <服务器命令>"
         return 1
     fi
-    # 通过 systemd 的 ExecStop 机制发送命令
-    screen -S mc-server -X stuff "$*\n" 2>/dev/null || \
+    su - minecraft -c "screen -S mc-server -X stuff '$*\n'" 2>/dev/null || \
         echo -e "${YELLOW}无法发送命令，请使用 mc-manager console 进入控制台${NC}"
 }
 
@@ -887,13 +886,13 @@ cmd_backup() {
     echo "正在备份..."
 
     # 先保存世界
-    screen -S mc-server -X stuff "save-off\n" 2>/dev/null
-    screen -S mc-server -X stuff "save-all\n" 2>/dev/null
+    su - minecraft -c "screen -S mc-server -X stuff 'save-off\n'" 2>/dev/null
+    su - minecraft -c "screen -S mc-server -X stuff 'save-all\n'" 2>/dev/null
     sleep 3
 
     tar -czf "$backup_file" -C "${MC_DIR}" world 2>/dev/null
 
-    screen -S mc-server -X stuff "save-on\n" 2>/dev/null
+    su - minecraft -c "screen -S mc-server -X stuff 'save-on\n'" 2>/dev/null
 
     if [[ -f "$backup_file" ]]; then
         echo -e "${GREEN}备份成功: ${backup_file}${NC}"
