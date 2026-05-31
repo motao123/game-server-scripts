@@ -770,7 +770,7 @@ MemoryHigh=${mem_limit}
 OOMScoreAdjust=-500
 
 ProtectSystem=strict
-ReadWritePaths=${MC_DIR}
+ReadWritePaths=${MC_DIR} /run/screen
 PrivateTmp=true
 NoNewPrivileges=true
 
