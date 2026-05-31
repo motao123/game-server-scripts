@@ -293,50 +293,87 @@ download_server() {
     info "下载 ${SERVER_TYPE} 服务器..."
 
     local jar_file=""
+    local use_bmcl=false
+
+    # 检测国内网络，优先使用 BMCL 镜像
+    if curl -sL --connect-timeout 3 --max-time 5 "https://bmclapidoc.bangbang93.com" &>/dev/null; then
+        info "检测到国内网络，使用 BMCL 镜像加速"
+        use_bmcl=true
+    fi
 
     case $SERVER_TYPE in
         paper)
-            # Paper API: https://api.papermc.io/v2/projects/paper
-            # 获取最新版本和构建号
-            local paper_version paper_build paper_url
+            local paper_version paper_url
+            local download_ok=false
 
-            # 获取 Paper 支持的最新 MC 版本
-            paper_version=$(curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null)
+            if [[ "$use_bmcl" == "true" ]]; then
+                # 国内: BMCL 镜像，直接下载最新版
+                paper_version=$(curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null)
 
-            if [[ -z "$paper_version" ]]; then
-                warn "无法通过 API 获取 Paper 版本，使用备用方式..."
-                # 备用: 直接下载最新构建
-                paper_version="1.21.4"
+                if [[ -n "$paper_version" ]]; then
+                    paper_url="https://bmclapidoc.bangbang93.com/paper/${paper_version}/latest/download"
+                    info "BMCL Paper 版本: ${paper_version}"
+                    jar_file="${MC_DIR}/paper.jar"
+                    if curl -sL --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                        download_ok=true
+                    fi
+                fi
             fi
 
-            # 获取该版本最新构建号
-            paper_build=$(curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null)
+            # 国外或 BMCL 失败: 官方 PaperMC API
+            if [[ "$download_ok" != "true" ]]; then
+                paper_version=$(curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null)
 
-            if [[ -z "$paper_build" ]]; then
-                warn "无法获取构建号，尝试使用 latest..."
-                paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/latest/downloads/paper-${paper_version}-latest.jar"
-            else
-                paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
+                if [[ -z "$paper_version" ]]; then
+                    paper_version="1.21.4"
+                fi
+
+                local paper_build
+                paper_build=$(curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null)
+
+                if [[ -n "$paper_build" ]]; then
+                    paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
+                else
+                    paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/latest/downloads/paper-${paper_version}-latest.jar"
+                fi
+
+                info "PaperMC API 版本: ${paper_version}, 构建: ${paper_build:-latest}"
+                jar_file="${MC_DIR}/paper.jar"
+                if curl -sL --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                    download_ok=true
+                fi
             fi
 
-            info "Paper 版本: ${paper_version}, 构建: ${paper_build:-latest}"
-            info "下载地址: ${paper_url}"
-
-            jar_file="${MC_DIR}/paper.jar"
-            curl -sL --max-time 120 -o "$jar_file" "$paper_url" || {
-                error "Paper 下载失败，请检查网络"
-                error "手动下载: ${paper_url}"
+            if [[ "$download_ok" != "true" ]]; then
+                error "Paper 下载失败，请检查网络或手动下载"
                 exit 1
-            }
+            fi
             ;;
 
         vanilla)
-            # 获取最新版本信息
-            local version_json_url server_jar_url
-            version_json_url=$(curl -sL --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
-                python3 -c "
+            local server_jar_url=""
+            local download_ok=false
+
+            if [[ "$use_bmcl" == "true" ]]; then
+                # 国内: BMCL 镜像
+                local mc_version
+                mc_version=$(curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null)
+
+                if [[ -n "$mc_version" ]]; then
+                    server_jar_url="https://bmclapidoc.bangbang93.com/version/${mc_version}/server"
+                    info "BMCL 原版版本: ${mc_version}"
+                fi
+            fi
+
+            # 国外或 BMCL 失败: 官方 Mojang API
+            if [[ -z "$server_jar_url" ]]; then
+                local version_json_url
+                version_json_url=$(curl -sL --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 latest=d['latest']['release']
@@ -346,33 +383,31 @@ for v in d['versions']:
         break
 " 2>/dev/null)
 
-            if [[ -n "$version_json_url" ]]; then
-                server_jar_url=$(curl -sL --max-time 15 "$version_json_url" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null)
+                if [[ -n "$version_json_url" ]]; then
+                    server_jar_url=$(curl -sL --max-time 15 "$version_json_url" 2>/dev/null | \
+                        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null)
+                fi
             fi
 
             if [[ -z "$server_jar_url" ]]; then
                 error "无法获取原版服务器下载地址"
-                error "请手动从 https://www.minecraft.net/en-us/download/server 下载"
                 exit 1
             fi
 
-            info "原版服务器下载地址: ${server_jar_url}"
+            info "下载地址: ${server_jar_url}"
             jar_file="${MC_DIR}/server.jar"
-            curl -sL --max-time 120 -o "$jar_file" "$server_jar_url" || {
-                error "下载失败"
+            if curl -sL --max-time 300 -o "$jar_file" "$server_jar_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                download_ok=true
+            fi
+
+            if [[ "$download_ok" != "true" ]]; then
+                error "原版服务器下载失败"
                 exit 1
-            }
+            fi
             ;;
     esac
 
-    if [[ -f "$jar_file" ]] && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
-        info "服务器下载完成: $jar_file ($(du -h "$jar_file" | cut -f1))"
-    else
-        error "服务器文件下载失败或文件异常"
-        exit 1
-    fi
-
+    info "服务器下载完成: $jar_file ($(du -h "$jar_file" | cut -f1))"
     chown "${MC_USER}:${MC_USER}" "$jar_file"
 }
 
