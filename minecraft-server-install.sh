@@ -284,7 +284,7 @@ setup_user_and_dir() {
         info "用户 $MC_USER 创建完成"
     fi
 
-    mkdir -p "$MC_DIR" "$MC_WORLD_DIR" "${MC_DIR}/logs" "${MC_DIR}/plugins" "${MC_DIR}/backups"
+    mkdir -p "$MC_DIR" "$MC_WORLD_DIR" "${MC_DIR}/logs" "${MC_DIR}/plugins" "${MC_DIR}/mods" "${MC_DIR}/backups"
     chown -R "${MC_USER}:${MC_USER}" "$MC_DIR"
 }
 
@@ -659,7 +659,7 @@ show_help() {
     echo ""
     echo "用法: mc-manager <命令>"
     echo ""
-    echo "命令:"
+    echo "服务器控制:"
     echo "  start       启动服务器"
     echo "  stop        停止服务器"
     echo "  restart     重启服务器"
@@ -670,11 +670,19 @@ show_help() {
     echo "  players     查看在线玩家"
     echo "  say <消息>  广播消息"
     echo "  whitelist   白名单管理"
+    echo ""
+    echo "运维管理:"
     echo "  backup      立即备份"
     echo "  update      更新服务器"
     echo "  config      编辑配置"
     echo "  memory      查看内存"
     echo "  info        服务器信息"
+    echo ""
+    echo "内容管理:"
+    echo "  plugin      插件管理 (搜索/安装/列表/删除)"
+    echo "  datapack    数据包管理 (安装/列表/删除/重载)"
+    echo "  resourcepack 资源包配置 (设置/移除)"
+    echo "  packs       查看已安装内容总览"
     echo ""
 }
 
@@ -795,6 +803,364 @@ cmd_info() {
     echo "世界目录:    ${MC_DIR}/world"
 }
 
+# ==================== 插件管理 (Modrinth API) ====================
+cmd_plugin() {
+    local subcmd="${1:-help}"
+    shift 2>/dev/null
+
+    local plugins_dir="${MC_DIR}/plugins"
+    local modrinth_api="https://api.modrinth.com/v2"
+    # 通过版本清单获取当前 MC 版本
+    local mc_version
+    mc_version=$(set +o pipefail; curl -sL --max-time 10 "${modrinth_api}/search?query=placeholder&limit=1" 2>/dev/null | \
+        python3 -c "import sys,json; print(json.load(sys.stdin)['hits'][0]['versions'][-1])" 2>/dev/null || echo "")
+
+    case "$subcmd" in
+        search)
+            local query="$*"
+            if [[ -z "$query" ]]; then
+                echo "用法: mc-manager plugin search <关键词>"
+                return 1
+            fi
+            echo -e "${CYAN}搜索插件: ${query}${NC}"
+            local result
+            result=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=10" 2>/dev/null || true)
+            if [[ -z "$result" ]]; then
+                echo -e "${YELLOW}无法连接 Modrinth API，请检查网络${NC}"
+                return 1
+            fi
+            echo "$result" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+hits = d.get('hits', [])
+if not hits:
+    print('  未找到结果')
+else:
+    print(f'  {\"序号\":<4} {\"名称\":<25} {\"下载量\":<12} {\"简介\"}')
+    print(f'  {\"-\"*4} {\"-\"*25} {\"-\"*12} {\"-\"*40}')
+    for i, h in enumerate(hits, 1):
+        desc = h.get('description', '')[:50]
+        dl = h.get('downloads', 0)
+        if dl >= 1000000:
+            dl_str = f'{dl/1000000:.1f}M'
+        elif dl >= 1000:
+            dl_str = f'{dl/1000:.0f}K'
+        else:
+            dl_str = str(dl)
+        print(f'  {i:<4} {h[\"title\"]:<25} {dl_str:<12} {desc}')
+    print()
+    print('  安装: mc-manager plugin install <插件名>')
+" 2>/dev/null || echo -e "${YELLOW}解析结果失败${NC}"
+            ;;
+
+        install)
+            local query="$*"
+            if [[ -z "$query" ]]; then
+                echo "用法: mc-manager plugin install <插件名>"
+                return 1
+            fi
+            mkdir -p "$plugins_dir"
+
+            echo -e "${CYAN}搜索插件: ${query}${NC}"
+            local result
+            result=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=5" 2>/dev/null || true)
+
+            if [[ -z "$result" ]]; then
+                echo -e "${YELLOW}无法连接 Modrinth API，尝试直接下载...${NC}"
+                # 尝试用 slug 直接获取
+                local project_id="$query"
+                local versions_json
+                versions_json=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
+                if [[ -n "$versions_json" ]]; then
+                    local dl_url filename
+                    dl_url=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['url'])" 2>/dev/null || true)
+                    filename=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['filename'])" 2>/dev/null || true)
+                    if [[ -n "$dl_url" ]]; then
+                        echo "下载: ${filename}"
+                        curl -sL --max-time 120 -o "${plugins_dir}/${filename}" "$dl_url"
+                        echo -e "${GREEN}安装成功: ${filename}${NC}"
+                        echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
+                        return 0
+                    fi
+                fi
+                echo -e "${RED}下载失败，请手动将 .jar 文件放入 ${plugins_dir}/${NC}"
+                return 1
+            fi
+
+            # 让用户选择或自动安装第一个
+            local project_id project_name
+            project_id=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['hits'][0]['slug'])" 2>/dev/null || true)
+            project_name=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['hits'][0]['title'])" 2>/dev/null || true)
+
+            if [[ -z "$project_id" ]]; then
+                echo -e "${RED}未找到匹配的插件${NC}"
+                return 1
+            fi
+
+            echo -e "找到: ${GREEN}${project_name}${NC} (${project_id})"
+
+            # 获取版本信息
+            local versions_json
+            versions_json=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
+
+            local dl_url filename
+            dl_url=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['url'])" 2>/dev/null || true)
+            filename=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['filename'])" 2>/dev/null || true)
+
+            if [[ -z "$dl_url" ]]; then
+                echo -e "${RED}获取下载地址失败${NC}"
+                return 1
+            fi
+
+            # 检查是否已安装
+            if [[ -f "${plugins_dir}/${filename}" ]]; then
+                echo -e "${YELLOW}已安装: ${filename}${NC}"
+                return 0
+            fi
+
+            echo "下载: ${filename}..."
+            if curl -sL --max-time 120 -o "${plugins_dir}/${filename}" "$dl_url" && [[ $(stat -c%s "${plugins_dir}/${filename}" 2>/dev/null || echo 0) -gt 10000 ]]; then
+                echo -e "${GREEN}安装成功: ${filename}${NC}"
+                echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
+            else
+                rm -f "${plugins_dir}/${filename}"
+                echo -e "${RED}下载失败${NC}"
+                return 1
+            fi
+            ;;
+
+        list)
+            echo -e "${CYAN}=== 已安装插件 ===${NC}"
+            if [[ -d "$plugins_dir" ]] && ls "$plugins_dir"/*.jar &>/dev/null; then
+                for f in "$plugins_dir"/*.jar; do
+                    local size
+                    size=$(du -h "$f" | cut -f1)
+                    echo "  $(basename "$f") ($size)"
+                done
+                echo ""
+                echo "共 $(ls "$plugins_dir"/*.jar 2>/dev/null | wc -l) 个插件"
+            else
+                echo "  暂无已安装插件"
+                echo "  安装: mc-manager plugin install <插件名>"
+            fi
+            ;;
+
+        remove)
+            local name="$*"
+            if [[ -z "$name" ]]; then
+                echo "用法: mc-manager plugin remove <插件文件名>"
+                echo "查看列表: mc-manager plugin list"
+                return 1
+            fi
+            # 支持模糊匹配
+            local found
+            found=$(ls "$plugins_dir"/${name}*.jar 2>/dev/null | head -1)
+            if [[ -n "$found" ]]; then
+                rm -f "$found"
+                echo -e "${GREEN}已删除: $(basename "$found")${NC}"
+                echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
+            else
+                echo -e "${RED}未找到插件: ${name}${NC}"
+                echo "已安装插件:"
+                ls "$plugins_dir"/*.jar 2>/dev/null | xargs -I{} echo "  $(basename {})"
+            fi
+            ;;
+
+        *)
+            echo "插件管理:"
+            echo "  mc-manager plugin search <关键词>  搜索插件 (Modrinth)"
+            echo "  mc-manager plugin install <名称>   安装插件"
+            echo "  mc-manager plugin list             列出已安装插件"
+            echo "  mc-manager plugin remove <名称>    删除插件"
+            ;;
+    esac
+}
+
+# ==================== 数据包管理 ====================
+cmd_datapack() {
+    local subcmd="${1:-help}"
+    shift 2>/dev/null
+
+    local datapacks_dir="${MC_DIR}/world/datapacks"
+
+    case "$subcmd" in
+        install)
+            local source="$*"
+            if [[ -z "$source" ]]; then
+                echo "用法: mc-manager datapack install <文件路径或URL>"
+                return 1
+            fi
+            mkdir -p "$datapacks_dir"
+
+            local filename=""
+            if [[ "$source" =~ ^https?:// ]]; then
+                filename=$(basename "$source" | sed 's/?.*//')
+                echo "下载数据包: ${filename}..."
+                if curl -sL --max-time 120 -o "${datapacks_dir}/${filename}" "$source" && \
+                   [[ $(stat -c%s "${datapacks_dir}/${filename}" 2>/dev/null || echo 0) -gt 100 ]]; then
+                    echo -e "${GREEN}安装成功: ${filename}${NC}"
+                else
+                    rm -f "${datapacks_dir}/${filename}"
+                    echo -e "${RED}下载失败${NC}"
+                    return 1
+                fi
+            elif [[ -f "$source" ]]; then
+                filename=$(basename "$source")
+                cp "$source" "${datapacks_dir}/${filename}"
+                echo -e "${GREEN}安装成功: ${filename}${NC}"
+            else
+                echo -e "${RED}文件不存在: ${source}${NC}"
+                return 1
+            fi
+            echo -e "${YELLOW}重载数据包: mc-manager datapack reload${NC}"
+            ;;
+
+        list)
+            echo -e "${CYAN}=== 已安装数据包 ===${NC}"
+            if [[ -d "$datapacks_dir" ]] && ls "$datapacks_dir"/*.zip &>/dev/null; then
+                for f in "$datapacks_dir"/*.zip; do
+                    local size
+                    size=$(du -h "$f" | cut -f1)
+                    echo "  $(basename "$f") ($size)"
+                done
+                echo ""
+                echo "共 $(ls "$datapacks_dir"/*.zip 2>/dev/null | wc -l) 个数据包"
+            else
+                echo "  暂无已安装数据包"
+                echo "  安装: mc-manager datapack install <文件路径或URL>"
+            fi
+            ;;
+
+        remove)
+            local name="$*"
+            if [[ -z "$name" ]]; then
+                echo "用法: mc-manager datapack remove <数据包名>"
+                return 1
+            fi
+            local found
+            found=$(ls "$datapacks_dir"/${name}*.zip 2>/dev/null | head -1)
+            if [[ -n "$found" ]]; then
+                rm -f "$found"
+                echo -e "${GREEN}已删除: $(basename "$found")${NC}"
+                echo -e "${YELLOW}重载数据包: mc-manager datapack reload${NC}"
+            else
+                echo -e "${RED}未找到数据包: ${name}${NC}"
+            fi
+            ;;
+
+        reload)
+            echo "重载数据包..."
+            cmd_cmd "reload"
+            echo -e "${GREEN}已发送重载命令${NC}"
+            ;;
+
+        *)
+            echo "数据包管理:"
+            echo "  mc-manager datapack install <路径或URL>  安装数据包"
+            echo "  mc-manager datapack list                 列出已安装"
+            echo "  mc-manager datapack remove <名称>        删除数据包"
+            echo "  mc-manager datapack reload               重载数据包"
+            ;;
+    esac
+}
+
+# ==================== 资源包配置 ====================
+cmd_resourcepack() {
+    local subcmd="${1:-help}"
+    shift 2>/dev/null
+
+    local props="${MC_DIR}/server.properties"
+
+    case "$subcmd" in
+        set)
+            local url="$1"
+            local sha1="$2"
+            if [[ -z "$url" ]]; then
+                echo "用法: mc-manager resourcepack set <URL> [SHA1]"
+                echo "示例: mc-manager resourcepack set https://example.com/pack.zip abc123..."
+                return 1
+            fi
+            # 计算 SHA1（如果是本地文件）
+            if [[ -f "$url" ]]; then
+                sha1=$(sha1sum "$url" | awk '{print $1}')
+                echo -e "${YELLOW}注意: 本地文件需要上传到网络，客户端才能下载${NC}"
+                echo -e "${YELLOW}SHA1: ${sha1}${NC}"
+            fi
+            # 修改 server.properties
+            if [[ -f "$props" ]]; then
+                sed -i "s|^resource-pack=.*|resource-pack=${url}|" "$props"
+                if [[ -n "$sha1" ]]; then
+                    sed -i "s|^resource-pack-sha1=.*|resource-pack-sha1=${sha1}|" "$props"
+                fi
+                sed -i "s|^require-resource-pack=.*|require-resource-pack=false|" "$props"
+                echo -e "${GREEN}资源包已设置${NC}"
+                echo "URL: ${url}"
+                [[ -n "$sha1" ]] && echo "SHA1: ${sha1}"
+                echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
+            else
+                echo -e "${RED}配置文件不存在: ${props}${NC}"
+            fi
+            ;;
+
+        remove)
+            if [[ -f "$props" ]]; then
+                sed -i "s|^resource-pack=.*|resource-pack=|" "$props"
+                sed -i "s|^resource-pack-sha1=.*|resource-pack-sha1=|" "$props"
+                sed -i "s|^require-resource-pack=.*|require-resource-pack=false|" "$props"
+                echo -e "${GREEN}资源包配置已移除${NC}"
+                echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
+            fi
+            ;;
+
+        *)
+            echo "资源包管理:"
+            echo "  mc-manager resourcepack set <URL> [SHA1]  设置服务器资源包"
+            echo "  mc-manager resourcepack remove            移除资源包配置"
+            echo ""
+            echo "资源包需要托管在可公开下载的 URL 上"
+            echo "推荐: 将 .zip 上传到对象存储 (腾讯云COS/阿里云OSS) 获取链接"
+            ;;
+    esac
+}
+
+# ==================== 内容总览 ====================
+cmd_packs() {
+    echo -e "${CYAN}${BOLD}=== Minecraft 服务器内容总览 ===${NC}"
+    echo ""
+
+    # 插件
+    echo -e "${GREEN}[插件]${NC} ${MC_DIR}/plugins/"
+    if ls "${MC_DIR}/plugins/"*.jar &>/dev/null; then
+        for f in "${MC_DIR}/plugins/"*.jar; do
+            echo "  - $(basename "$f")"
+        done
+    else
+        echo "  (无)"
+    fi
+    echo ""
+
+    # 数据包
+    echo -e "${GREEN}[数据包]${NC} ${MC_DIR}/world/datapacks/"
+    if ls "${MC_DIR}/world/datapacks/"*.zip &>/dev/null; then
+        for f in "${MC_DIR}/world/datapacks/"*.zip; do
+            echo "  - $(basename "$f")"
+        done
+    else
+        echo "  (无)"
+    fi
+    echo ""
+
+    # 资源包
+    echo -e "${GREEN}[资源包]${NC}"
+    local rp
+    rp=$(grep "^resource-pack=" "${MC_DIR}/server.properties" 2>/dev/null | cut -d= -f2)
+    if [[ -n "$rp" ]]; then
+        echo "  URL: ${rp}"
+    else
+        echo "  (未配置)"
+    fi
+}
+
 case "${1:-help}" in
     start)    cmd_start ;;
     stop)     cmd_stop ;;
@@ -811,6 +1177,10 @@ case "${1:-help}" in
     config)   cmd_config ;;
     memory)   cmd_memory ;;
     info)     cmd_info ;;
+    plugin)   shift; cmd_plugin "$@" ;;
+    datapack) shift; cmd_datapack "$@" ;;
+    resourcepack) shift; cmd_resourcepack "$@" ;;
+    packs)    cmd_packs ;;
     *)        show_help ;;
 esac
 MANAGEREOF
@@ -910,19 +1280,27 @@ show_result() {
     echo -e "  世界目录:    ${MC_DIR}/world"
     echo ""
     echo -e "  ${YELLOW}${BOLD}管理命令:${NC}"
-    echo -e "    mc-manager start       # 启动"
-    echo -e "    mc-manager stop        # 停止"
-    echo -e "    mc-manager restart     # 重启"
-    echo -e "    mc-manager status      # 状态"
-    echo -e "    mc-manager logs        # 日志"
-    echo -e "    mc-manager console     # 进入控制台"
-    echo -e "    mc-manager cmd <命令>  # 执行命令"
-    echo -e "    mc-manager players     # 在线玩家"
-    echo -e "    mc-manager say <消息>  # 广播"
-    echo -e "    mc-manager backup      # 备份"
-    echo -e "    mc-manager update      # 更新"
-    echo -e "    mc-manager config      # 编辑配置"
-    echo -e "    mc-manager info        # 服务器信息"
+    echo -e "    mc-manager start        # 启动"
+    echo -e "    mc-manager stop         # 停止"
+    echo -e "    mc-manager restart      # 重启"
+    echo -e "    mc-manager status       # 状态"
+    echo -e "    mc-manager logs         # 日志"
+    echo -e "    mc-manager console      # 进入控制台"
+    echo -e "    mc-manager cmd <命令>   # 执行命令"
+    echo -e "    mc-manager players      # 在线玩家"
+    echo -e "    mc-manager say <消息>   # 广播"
+    echo -e "    mc-manager backup       # 备份"
+    echo -e "    mc-manager update       # 更新"
+    echo -e "    mc-manager config       # 编辑配置"
+    echo -e "    mc-manager info         # 服务器信息"
+    echo ""
+    echo -e "  ${YELLOW}${BOLD}内容管理:${NC}"
+    echo -e "    mc-manager plugin search <关键词>   # 搜索插件"
+    echo -e "    mc-manager plugin install <名称>    # 安装插件"
+    echo -e "    mc-manager plugin list              # 已安装插件"
+    echo -e "    mc-manager datapack install <URL>   # 安装数据包"
+    echo -e "    mc-manager resourcepack set <URL>   # 设置资源包"
+    echo -e "    mc-manager packs                    # 查看所有内容"
     echo ""
     echo -e "  ${RED}${BOLD}!!! 重要: 云服务器安全组配置 !!!${NC}"
     echo -e "  ${YELLOW}系统防火墙已自动放行，但云服务器还需在控制台配置安全组:${NC}"

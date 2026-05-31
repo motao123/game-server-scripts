@@ -96,6 +96,7 @@ pal-manager info        # 显示服务器信息
 ### Minecraft — mc-manager
 
 ```bash
+# 服务器控制
 mc-manager start        # 启动服务器
 mc-manager stop         # 停止服务器
 mc-manager restart      # 重启服务器
@@ -105,10 +106,25 @@ mc-manager console      # 进入控制台（可执行命令）
 mc-manager cmd <命令>   # 直接执行游戏命令
 mc-manager players      # 查看在线玩家
 mc-manager say <消息>   # 广播消息
+
+# 运维管理
 mc-manager backup       # 立即备份
 mc-manager update       # 更新服务器
 mc-manager config       # 编辑配置
 mc-manager info         # 服务器信息
+
+# 内容管理
+mc-manager plugin search <关键词>   # 搜索 Modrinth 插件
+mc-manager plugin install <名称>    # 安装插件
+mc-manager plugin list              # 列出已安装插件
+mc-manager plugin remove <名称>     # 删除插件
+mc-manager datapack install <URL>   # 安装数据包
+mc-manager datapack list            # 列出数据包
+mc-manager datapack remove <名称>   # 删除数据包
+mc-manager datapack reload          # 重载数据包
+mc-manager resourcepack set <URL>   # 设置资源包
+mc-manager resourcepack remove      # 移除资源包
+mc-manager packs                    # 查看所有已安装内容
 ```
 
 ### 英灵神殿 — valheim-manager
