@@ -216,7 +216,7 @@ install_java() {
 
     # 方式2: 包管理器没有 Java 21，从 Adoptium 下载安装
     if [[ "$installed" != "true" ]] || ! command -v java &>/dev/null; then
-        warn "包管理器未找到 Java ${required_java}，从 Adoptium 下载..."
+        warn "包管理器未找到 Java ${required_java}，准备下载..."
 
         local arch
         arch=$(uname -m)
@@ -226,14 +226,32 @@ install_java() {
             *)       error "不支持的架构: $arch"; exit 1 ;;
         esac
 
-        local java_url="https://api.adoptium.net/v3/binary/latest/${required_java}/ga/linux/${arch}/jre/hotspot/normal/eclipse?project=jdk"
-        local tmp_java="/tmp/temurin-jre.tar.gz"
+        # 自动检测网络环境，选择最近的下载源
+        local java_urls=()
+        if curl -sL --connect-timeout 3 --max-time 5 "https://mirrors.tuna.tsinghua.edu.cn" &>/dev/null; then
+            info "检测到国内网络，使用清华镜像源"
+            java_urls+=("https://mirrors.tuna.tsinghua.edu.cn/Adoptium/${required_java}/jre/${arch}_linux/latest")
+        fi
+        # 官方源作为备用
+        java_urls+=("https://api.adoptium.net/v3/binary/latest/${required_java}/ga/linux/${arch}/jre/hotspot/normal/eclipse?project=jdk")
 
-        info "下载 Temurin JRE ${required_java} (${arch})..."
-        curl -sL --max-time 180 -o "$tmp_java" "$java_url" || {
-            error "下载 Java 失败，请检查网络或手动安装 Java ${required_java}"
+        local tmp_java="/tmp/temurin-jre.tar.gz"
+        local download_ok=false
+
+        for url in "${java_urls[@]}"; do
+            info "尝试下载: ${url}"
+            if curl -sL --max-time 300 -o "$tmp_java" "$url" && [[ $(stat -c%s "$tmp_java" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                download_ok=true
+                break
+            fi
+            warn "下载失败，尝试下一个源..."
+            rm -f "$tmp_java"
+        done
+
+        if [[ "$download_ok" != "true" ]]; then
+            error "所有下载源均失败，请手动安装 Java ${required_java}"
             exit 1
-        }
+        fi
 
         local java_dir="/opt/java/temurin-${required_java}"
         mkdir -p "$java_dir"
