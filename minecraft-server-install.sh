@@ -29,6 +29,9 @@ SERVER_TYPE="paper"
 MC_MEMORY="4G"         # JVM 最大内存
 MC_MEMORY_MIN="1G"     # JVM 最小内存
 
+# 版本 (留空=最新版)
+MC_VERSION=""
+
 # 服务器配置
 MC_PORT=25565
 MC_MAX_PLAYERS=20
@@ -139,16 +142,26 @@ user_config() {
         *) SERVER_TYPE="paper" ;;
     esac
 
+    # 获取可用版本列表
+    local available_versions=""
+    local latest_version=""
+    info "获取可用版本列表..."
+    available_versions=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+        python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(d['versions'][-10:]))" 2>/dev/null || true)
+    latest_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
+
     echo -e "\n  ${CYAN}当前默认配置:${NC}"
     echo -e "  ┌─────────────────────────────────────────────┐"
     echo -e "  │  1) 服务器类型:  ${SERVER_TYPE}"
-    echo -e "  │  2) 游戏端口:    ${MC_PORT}"
-    echo -e "  │  3) 最大玩家数:  ${MC_MAX_PLAYERS}"
-    echo -e "  │  4) JVM 内存:    ${MC_MEMORY}"
-    echo -e "  │  5) 游戏模式:    ${MC_GAMEMODE}"
-    echo -e "  │  6) 难度:        ${MC_DIFFICULTY}"
-    echo -e "  │  7) 视距:        ${MC_VIEW_DISTANCE}"
-    echo -e "  │  8) MOTD:        (服务器列表显示名称)"
+    echo -e "  │  2) 游戏版本:    ${latest_version:-最新版} (最新)"
+    echo -e "  │  3) 游戏端口:    ${MC_PORT}"
+    echo -e "  │  4) 最大玩家数:  ${MC_MAX_PLAYERS}"
+    echo -e "  │  5) JVM 内存:    ${MC_MEMORY}"
+    echo -e "  │  6) 游戏模式:    ${MC_GAMEMODE}"
+    echo -e "  │  7) 难度:        ${MC_DIFFICULTY}"
+    echo -e "  │  8) 视距:        ${MC_VIEW_DISTANCE}"
+    echo -e "  │  9) MOTD:        (服务器列表显示名称)"
     echo -e "  └─────────────────────────────────────────────┘"
     echo ""
     echo -e "  直接回车使用默认值，或输入 ${YELLOW}c${NC} 自定义"
@@ -157,6 +170,13 @@ user_config() {
 
     if [[ "$choice" == "c" || "$choice" == "C" ]]; then
         echo ""
+        if [[ -n "$available_versions" ]]; then
+            echo -e "  ${CYAN}可用版本:${NC} ${available_versions}"
+            echo ""
+        fi
+        read -rp "  游戏版本 [${latest_version:-最新}，留空=最新]: " input
+        MC_VERSION="${input:-}"
+
         read -rp "  游戏端口 [${MC_PORT}]: " input
         MC_PORT="${input:-$MC_PORT}"
 
@@ -189,6 +209,7 @@ user_config() {
     echo ""
     info "最终配置:"
     echo -e "    服务器类型:  ${CYAN}${SERVER_TYPE}${NC}"
+    echo -e "    游戏版本:    ${CYAN}${MC_VERSION:-最新}${NC}"
     echo -e "    游戏端口:    ${CYAN}${MC_PORT}${NC}"
     echo -e "    最大玩家数:  ${CYAN}${MC_MAX_PLAYERS}${NC}"
     echo -e "    JVM 内存:    ${CYAN}${MC_MEMORY}${NC}"
@@ -334,9 +355,13 @@ download_server() {
             local default_build="232"
 
             if [[ "$use_bmcl" == "true" ]]; then
-                # 国内: BMCL 镜像，直接下载最新版
-                paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
-                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
+                # 国内: BMCL 镜像
+                if [[ -n "$MC_VERSION" ]]; then
+                    paper_version="$MC_VERSION"
+                else
+                    paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                        python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
+                fi
 
                 if [[ -n "$paper_version" ]]; then
                     # BMCL 有时返回不存在的版本号，先验证文件大小
@@ -354,8 +379,12 @@ download_server() {
 
             # 官方 PaperMC API (国内失败或国外)
             if [[ "$download_ok" != "true" ]]; then
-                paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
+                if [[ -n "$MC_VERSION" ]]; then
+                    paper_version="$MC_VERSION"
+                else
+                    paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+                        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
+                fi
 
                 if [[ -z "$paper_version" ]]; then
                     paper_version="$default_version"
@@ -402,8 +431,12 @@ download_server() {
             if [[ "$use_bmcl" == "true" ]]; then
                 # 国内: BMCL 镜像
                 local mc_version
-                mc_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
-                    python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
+                if [[ -n "$MC_VERSION" ]]; then
+                    mc_version="$MC_VERSION"
+                else
+                    mc_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                        python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
+                fi
 
                 if [[ -n "$mc_version" ]]; then
                     server_jar_url="https://bmclapidoc.bangbang93.com/version/${mc_version}/server"
@@ -418,9 +451,9 @@ download_server() {
                     python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-latest=d['latest']['release']
+target='${MC_VERSION}' if '${MC_VERSION}' else d['latest']['release']
 for v in d['versions']:
-    if v['id']==latest:
+    if v['id']==target:
         print(v['url'])
         break
 " 2>/dev/null || true)
@@ -454,11 +487,15 @@ for v in d['versions']:
             local mc_version="1.21.4"
             local download_ok=false
 
-            # 获取最新 MC 版本
-            local latest_mc
-            latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null || true)
-            [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+            if [[ -n "$MC_VERSION" ]]; then
+                mc_version="$MC_VERSION"
+            else
+                # 获取最新 MC 版本
+                local latest_mc
+                latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null || true)
+                [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+            fi
 
             info "Fabric 版本: ${fabric_version}, MC: ${mc_version}"
 
@@ -497,11 +534,15 @@ for v in d['versions']:
             local forge_version="54.0.16"
             local download_ok=false
 
-            # 获取最新 MC 版本
-            local latest_mc
-            latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); versions=sorted(d.keys(), reverse=True); print(versions[0])" 2>/dev/null || true)
-            [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+            if [[ -n "$MC_VERSION" ]]; then
+                mc_version="$MC_VERSION"
+            else
+                # 获取最新 MC 版本
+                local latest_mc
+                latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); versions=sorted(d.keys(), reverse=True); print(versions[0])" 2>/dev/null || true)
+                [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+            fi
 
             # 获取该 MC 版本的最新 Forge 版本
             local forge_versions_json
