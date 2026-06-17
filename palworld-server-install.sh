@@ -280,7 +280,11 @@ install_steamcmd_from_archive() {
 
     info "使用安装包安装 SteamCMD: ${STEAMCMD_URL}"
     mkdir -p "$steamcmd_dir"
-    curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$STEAMCMD_URL" -o "$archive"
+    if [[ -f "$STEAMCMD_URL" ]]; then
+        cp "$STEAMCMD_URL" "$archive"
+    else
+        curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$STEAMCMD_URL" -o "$archive"
+    fi
     tar -xzf "$archive" -C "$steamcmd_dir"
     ln -sf "${steamcmd_dir}/steamcmd.sh" /usr/bin/steamcmd
     info "SteamCMD 安装到 ${steamcmd_dir}"
@@ -393,7 +397,11 @@ download_palserver_from_archive() {
     info "离线包地址: ${PALSERVER_ARCHIVE_URL}"
 
     mkdir -p "$(dirname "${PAL_SERVER_DIR}")"
-    curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$PALSERVER_ARCHIVE_URL" -o "$archive"
+    if [[ -f "$PALSERVER_ARCHIVE_URL" ]]; then
+        cp "$PALSERVER_ARCHIVE_URL" "$archive"
+    else
+        curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$PALSERVER_ARCHIVE_URL" -o "$archive"
+    fi
 
     if [[ -n "$PALSERVER_ARCHIVE_SHA256" ]]; then
         echo "${PALSERVER_ARCHIVE_SHA256}  ${archive}" | sha256sum -c -

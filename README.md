@@ -62,22 +62,59 @@ git clone git@github.com:motao123/game-server-scripts.git
 
 ### 4. 国内服务器 SteamCMD 下载失败
 
-如果国内服务器无法连接 Steam CDN，可以给幻兽帕鲁脚本指定 SteamCMD 镜像、代理或自备离线包：
+如果国内服务器无法连接 Steam CDN，可以用三种方式处理：仓库内置 SteamCMD 安装包镜像、SteamCMD 代理、用户自备 PalServer 离线包。
+
+#### 4.1 维护者同步 SteamCMD 安装包到 CNB / Gitee / GitHub
+
+在能访问 Steam CDN 的机器上执行：
 
 ```bash
-# 使用 SteamCMD 安装包镜像，例如同步到 cnb.cool 后的地址
-sudo env STEAMCMD_URL="https://your-mirror/steamcmd_linux.tar.gz" ./palworld-server-install.sh
+git clone https://cnb.cool/code_free/game-server-scripts.git
+cd game-server-scripts
+mkdir -p mirrors
+curl -fL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" -o mirrors/steamcmd_linux.tar.gz
 
-# 让 SteamCMD 通过代理下载 Palworld 服务端
+git add mirrors/steamcmd_linux.tar.gz
+git commit -m "chore: 同步 SteamCMD 安装包"
+git push origin master   # 推送到 CNB
+git push gitee master    # 可选：同步到 Gitee
+git push github master   # 可选：同步到 GitHub
+```
+
+普通用户克隆仓库后，直接使用仓库里的安装包：
+
+```bash
+git clone https://cnb.cool/code_free/game-server-scripts.git
+cd game-server-scripts
+sudo env STEAMCMD_URL="$PWD/mirrors/steamcmd_linux.tar.gz" ./palworld-server-install.sh
+```
+
+这只解决 SteamCMD 本体安装包下载失败；Palworld 服务端仍需要 SteamCMD 连接 Steam 下载。
+
+#### 4.2 SteamCMD 通过代理下载 Palworld 服务端
+
+```bash
 sudo env STEAMCMD_PROXY="socks5://127.0.0.1:7890" ./palworld-server-install.sh
+```
 
-# 两者一起使用
+也可以同时使用仓库内置 SteamCMD 安装包和代理：
+
+```bash
 sudo env \
-  STEAMCMD_URL="https://your-mirror/steamcmd_linux.tar.gz" \
+  STEAMCMD_URL="$PWD/mirrors/steamcmd_linux.tar.gz" \
   STEAMCMD_PROXY="socks5://127.0.0.1:7890" \
   ./palworld-server-install.sh
+```
 
-# 使用自备 PalServer 离线包
+后续更新也可以走代理：
+
+```bash
+sudo env STEAMCMD_PROXY="socks5://127.0.0.1:7890" pal-manager update
+```
+
+#### 4.3 使用自备 PalServer 离线包
+
+```bash
 sudo env PALSERVER_ARCHIVE_URL="https://your-private-url/PalServer.tar.gz" ./palworld-server-install.sh
 
 # 可选：校验离线包 SHA256
