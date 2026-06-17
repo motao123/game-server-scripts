@@ -27,6 +27,12 @@ SERVICE_NAME="pal-server"
 MANAGER_SCRIPT="/usr/local/bin/pal-manager"
 UPDATE_SCRIPT="/usr/local/bin/pal-update"
 
+# SteamCMD / 离线包下载配置
+STEAMCMD_URL="${STEAMCMD_URL:-https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz}"
+STEAMCMD_PROXY="${STEAMCMD_PROXY:-}"
+PALSERVER_ARCHIVE_URL="${PALSERVER_ARCHIVE_URL:-}"
+PALSERVER_ARCHIVE_SHA256="${PALSERVER_ARCHIVE_SHA256:-}"
+
 # 端口配置
 DEFAULT_PORT=8211
 QUERY_PORT=27015
@@ -148,6 +154,9 @@ user_config() {
     echo -e "    游戏端口:    ${CYAN}${DEFAULT_PORT}${NC}"
     echo -e "    RCON端口:    ${CYAN}${RCON_PORT}${NC}"
     [[ -n "$SERVER_PASSWORD" ]] && echo -e "    服务器密码:  ${CYAN}已设置${NC}" || echo -e "    服务器密码:  ${CYAN}无密码${NC}"
+    [[ "$STEAMCMD_URL" != "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" ]] && echo -e "    SteamCMD镜像: ${CYAN}${STEAMCMD_URL}${NC}"
+    [[ -n "$STEAMCMD_PROXY" ]] && echo -e "    SteamCMD代理: ${CYAN}${STEAMCMD_PROXY}${NC}"
+    [[ -n "$PALSERVER_ARCHIVE_URL" ]] && echo -e "    离线包安装:  ${CYAN}已启用${NC}"
     echo ""
 }
 
@@ -265,6 +274,18 @@ setup_swap() {
 }
 
 # ==================== 安装 SteamCMD ====================
+install_steamcmd_from_archive() {
+    local steamcmd_dir="/opt/steamcmd"
+    local archive="/tmp/steamcmd_linux.tar.gz"
+
+    info "使用安装包安装 SteamCMD: ${STEAMCMD_URL}"
+    mkdir -p "$steamcmd_dir"
+    curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$STEAMCMD_URL" -o "$archive"
+    tar -xzf "$archive" -C "$steamcmd_dir"
+    ln -sf "${steamcmd_dir}/steamcmd.sh" /usr/bin/steamcmd
+    info "SteamCMD 安装到 ${steamcmd_dir}"
+}
+
 install_steamcmd() {
 
     if command -v steamcmd &>/dev/null; then
@@ -283,31 +304,23 @@ install_steamcmd() {
             add-apt-repository multiverse -y
             dpkg --add-architecture i386
             apt-get update -y
-            apt-get install -y steamcmd
+            apt-get install -y steamcmd || install_steamcmd_from_archive
             ;;
         debian)
             apt-get install -y software-properties-common
             apt-add-repository non-free -y
             dpkg --add-architecture i386
             apt-get update -y
-            apt-get install -y steamcmd
+            apt-get install -y steamcmd || install_steamcmd_from_archive
             ;;
         centos|rhel|rocky|almalinux)
-            # RHEL系需要手动下载 SteamCMD
             info "RHEL系系统，手动安装 SteamCMD..."
-            local steamcmd_dir="/opt/steamcmd"
-            mkdir -p "$steamcmd_dir"
-            curl -sSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar -xz -C "$steamcmd_dir"
-            ln -sf "${steamcmd_dir}/steamcmd.sh" /usr/bin/steamcmd
-            info "SteamCMD 安装到 ${steamcmd_dir}"
+            install_steamcmd_from_archive
             ;;
         *)
             apt-get install -y lib32gcc-s1 steamcmd || {
                 warn "包管理器安装失败，手动下载 SteamCMD..."
-                local steamcmd_dir="/opt/steamcmd"
-                mkdir -p "$steamcmd_dir"
-                curl -sSL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar -xz -C "$steamcmd_dir"
-                ln -sf "${steamcmd_dir}/steamcmd.sh" /usr/bin/steamcmd
+                install_steamcmd_from_archive
             }
             ;;
     esac
@@ -350,6 +363,54 @@ EOF
 }
 
 # ==================== 下载帕鲁服务器 ====================
+run_steamcmd_palworld_update() {
+    local steamcmd_args=(
+        +login anonymous
+        +force_install_dir "${PAL_SERVER_DIR}"
+        +app_update 2394010 validate
+        +quit
+    )
+
+    if [[ -n "$STEAMCMD_PROXY" ]]; then
+        info "SteamCMD 将通过代理下载: ${STEAMCMD_PROXY}"
+        sudo -u "$STEAM_USER" env \
+            HTTP_PROXY="$STEAMCMD_PROXY" \
+            HTTPS_PROXY="$STEAMCMD_PROXY" \
+            ALL_PROXY="$STEAMCMD_PROXY" \
+            http_proxy="$STEAMCMD_PROXY" \
+            https_proxy="$STEAMCMD_PROXY" \
+            all_proxy="$STEAMCMD_PROXY" \
+            steamcmd "${steamcmd_args[@]}"
+    else
+        sudo -u "$STEAM_USER" steamcmd "${steamcmd_args[@]}"
+    fi
+}
+
+download_palserver_from_archive() {
+    local archive="/tmp/PalServer.tar.gz"
+
+    info "使用用户自备离线包安装 Palworld 服务端"
+    info "离线包地址: ${PALSERVER_ARCHIVE_URL}"
+
+    mkdir -p "$(dirname "${PAL_SERVER_DIR}")"
+    curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$PALSERVER_ARCHIVE_URL" -o "$archive"
+
+    if [[ -n "$PALSERVER_ARCHIVE_SHA256" ]]; then
+        echo "${PALSERVER_ARCHIVE_SHA256}  ${archive}" | sha256sum -c -
+    fi
+
+    tar -xzf "$archive" -C "$(dirname "${PAL_SERVER_DIR}")"
+    chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SERVER_DIR}"
+
+    if [[ ! -f "${PAL_SERVER_DIR}/PalServer.sh" ]]; then
+        error "离线包解压后未找到 PalServer.sh"
+        error "请确认压缩包内目录结构为 PalServer/PalServer.sh"
+        exit 1
+    fi
+
+    info "Palworld 服务端离线包安装完成"
+}
+
 download_palserver() {
 
     info "开始下载，这可能需要 10-30 分钟，取决于网络速度..."
@@ -359,14 +420,23 @@ download_palserver() {
     mkdir -p "${PAL_SERVER_DIR}"
     chown "${STEAM_USER}:${STEAM_USER}" "${PAL_SERVER_DIR}"
 
+    if [[ -n "$PALSERVER_ARCHIVE_URL" ]]; then
+        download_palserver_from_archive
+        return
+    fi
+
     # 最多重试3次
     local retry=0
     local max_retry=3
-    while ! sudo -u "$STEAM_USER" steamcmd +login anonymous +force_install_dir "${PAL_SERVER_DIR}" +app_update 2394010 validate +quit; do
+    while ! run_steamcmd_palworld_update; do
         retry=$((retry + 1))
         if [[ $retry -ge $max_retry ]]; then
             error "SteamCMD 下载失败，已重试 ${max_retry} 次"
-            error "请检查网络连接，或手动执行:"
+            error "国内服务器连接 Steam CDN 失败较常见，可尝试:"
+            error "  1) 使用代理: sudo env STEAMCMD_PROXY=socks5://127.0.0.1:7890 $0"
+            error "  2) 使用 HTTP 代理: sudo env STEAMCMD_PROXY=http://127.0.0.1:7890 $0"
+            error "  3) 使用自备离线包: sudo env PALSERVER_ARCHIVE_URL=https://your-private-url/PalServer.tar.gz $0"
+            error "也可手动执行:"
             error "  sudo -u ${STEAM_USER} steamcmd +login anonymous +force_install_dir ${PAL_SERVER_DIR} +app_update 2394010 validate +quit"
             exit 1
         fi
@@ -696,6 +766,7 @@ create_manager_script() {
 SERVICE="pal-server"
 RCON_PORT=25575
 ADMIN_PASS="ADMIN_PASSWORD_PLACEHOLDER"
+STEAMCMD_PROXY="${STEAMCMD_PROXY:-}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -734,10 +805,47 @@ cmd_status()   { systemctl status "$SERVICE" --no-pager; }
 cmd_logs()     { journalctl -u "$SERVICE" -f --no-pager; }
 cmd_logs_all() { journalctl -u "$SERVICE" --no-pager -n 500; }
 
+run_steamcmd_update() {
+    local steamcmd_args=(
+        +login anonymous
+        +force_install_dir "/home/steam/Steam/steamapps/common/PalServer"
+        +app_update 2394010 validate
+        +quit
+    )
+
+    if [[ -n "$STEAMCMD_PROXY" ]]; then
+        echo -e "${CYAN}SteamCMD 将通过代理下载: ${STEAMCMD_PROXY}${NC}"
+        sudo -u steam env \
+            HTTP_PROXY="$STEAMCMD_PROXY" \
+            HTTPS_PROXY="$STEAMCMD_PROXY" \
+            ALL_PROXY="$STEAMCMD_PROXY" \
+            http_proxy="$STEAMCMD_PROXY" \
+            https_proxy="$STEAMCMD_PROXY" \
+            all_proxy="$STEAMCMD_PROXY" \
+            steamcmd "${steamcmd_args[@]}"
+    else
+        sudo -u steam steamcmd "${steamcmd_args[@]}"
+    fi
+}
+
 cmd_update() {
     echo -e "${CYAN}正在更新服务器...${NC}"
     systemctl stop "$SERVICE" 2>/dev/null
-    sudo -u steam steamcmd +login anonymous +force_install_dir "/home/steam/Steam/steamapps/common/PalServer" +app_update 2394010 validate +quit
+
+    local retry=0
+    local max_retry=3
+    while ! run_steamcmd_update; do
+        retry=$((retry + 1))
+        if [[ $retry -ge $max_retry ]]; then
+            echo -e "${RED}SteamCMD 更新失败，已重试 ${max_retry} 次${NC}" >&2
+            echo -e "${YELLOW}国内服务器可尝试: sudo env STEAMCMD_PROXY=socks5://127.0.0.1:7890 pal-manager update${NC}" >&2
+            systemctl start "$SERVICE" 2>/dev/null
+            return 1
+        fi
+        echo -e "${YELLOW}更新失败，${retry}/${max_retry} 次重试...${NC}"
+        sleep 5
+    done
+
     systemctl start "$SERVICE"
     echo -e "${GREEN}更新完成${NC}"
 }

@@ -39,8 +39,9 @@ ssh root@你的服务器IP
 以幻兽帕鲁为例：
 
 ```bash
-# 下载脚本
-wget https://gitee.com/pigfei/game-server-scripts/raw/master/palworld-server-install.sh
+# 从 CNB 克隆脚本仓库
+git clone https://cnb.cool/code_free/game-server-scripts.git
+cd game-server-scripts
 
 # 添加执行权限
 chmod +x palworld-server-install.sh
@@ -49,7 +50,66 @@ chmod +x palworld-server-install.sh
 sudo ./palworld-server-install.sh
 ```
 
-### 4. 配置安全组
+也可以使用其他镜像仓库：
+
+```bash
+# Gitee
+git clone https://gitee.com/pigfei/game-server-scripts.git
+
+# GitHub
+git clone git@github.com:motao123/game-server-scripts.git
+```
+
+### 4. 国内服务器 SteamCMD 下载失败
+
+如果国内服务器无法连接 Steam CDN，可以给幻兽帕鲁脚本指定 SteamCMD 镜像、代理或自备离线包：
+
+```bash
+# 使用 SteamCMD 安装包镜像，例如同步到 cnb.cool 后的地址
+sudo env STEAMCMD_URL="https://your-mirror/steamcmd_linux.tar.gz" ./palworld-server-install.sh
+
+# 让 SteamCMD 通过代理下载 Palworld 服务端
+sudo env STEAMCMD_PROXY="socks5://127.0.0.1:7890" ./palworld-server-install.sh
+
+# 两者一起使用
+sudo env \
+  STEAMCMD_URL="https://your-mirror/steamcmd_linux.tar.gz" \
+  STEAMCMD_PROXY="socks5://127.0.0.1:7890" \
+  ./palworld-server-install.sh
+
+# 使用自备 PalServer 离线包
+sudo env PALSERVER_ARCHIVE_URL="https://your-private-url/PalServer.tar.gz" ./palworld-server-install.sh
+
+# 可选：校验离线包 SHA256
+sudo env \
+  PALSERVER_ARCHIVE_URL="https://your-private-url/PalServer.tar.gz" \
+  PALSERVER_ARCHIVE_SHA256="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  ./palworld-server-install.sh
+```
+
+离线包推荐目录结构：
+
+```text
+PalServer/
+├── PalServer.sh
+├── DefaultPalWorldSettings.ini
+├── Engine/
+└── Pal/
+```
+
+可在已下载好的服务器上这样打包：
+
+```bash
+tar -czf PalServer.tar.gz -C /home/steam/Steam/steamapps/common PalServer
+```
+
+后续更新也可以走代理：
+
+```bash
+sudo env STEAMCMD_PROXY="socks5://127.0.0.1:7890" pal-manager update
+```
+
+### 5. 配置安全组
 
 脚本会自动配置系统防火墙，但**云服务器还需要在控制台配置安全组**：
 
@@ -66,7 +126,7 @@ sudo ./palworld-server-install.sh
 - **阿里云**：控制台 → ECS → 安全组 → 配置规则 → 入方向
 - **棉花云**：控制台 → 云服务器 → 防火墙 → 添加规则
 
-### 5. 连接游戏
+### 6. 连接游戏
 
 在游戏客户端中输入 `你的服务器IP:端口` 即可连接。
 
