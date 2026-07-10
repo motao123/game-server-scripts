@@ -36,6 +36,7 @@ PALSERVER_ARCHIVE_SHA256="${PALSERVER_ARCHIVE_SHA256:-}"
 DEFAULT_PORT=8211
 QUERY_PORT=27015
 RCON_PORT=25575
+REST_API_PORT=8212          # v1.0 REST API，仅本地访问（官方建议不暴露公网）
 
 # 性能配置
 SWAP_SIZE="16G"
@@ -136,6 +137,7 @@ user_config() {
     echo -e "  │  4) 最大玩家数:  ${MAX_PLAYERS}"
     echo -e "  │  5) 游戏端口:    ${DEFAULT_PORT}"
     echo -e "  │  6) RCON端口:    ${RCON_PORT}"
+    echo -e "  │  7) REST API端口: ${REST_API_PORT} (仅本地)"
     echo -e "  └─────────────────────────────────────────────┘"
     echo ""
     echo -e "  直接回车使用以上默认值，或输入 ${YELLOW}c${NC} 自定义配置"
@@ -161,6 +163,9 @@ user_config() {
 
         read -rp "  RCON端口 [${RCON_PORT}]: " input
         RCON_PORT="${input:-$RCON_PORT}"
+
+        read -rp "  REST API端口(仅本地) [${REST_API_PORT}]: " input
+        REST_API_PORT="${input:-$REST_API_PORT}"
     fi
 
     echo ""
@@ -169,6 +174,7 @@ user_config() {
     echo -e "    最大玩家数:  ${CYAN}${MAX_PLAYERS}${NC}"
     echo -e "    游戏端口:    ${CYAN}${DEFAULT_PORT}${NC}"
     echo -e "    RCON端口:    ${CYAN}${RCON_PORT}${NC}"
+    echo -e "    REST API端口: ${CYAN}${REST_API_PORT}${NC} (仅本地，不开防火墙)"
     [[ -n "$SERVER_PASSWORD" ]] && echo -e "    服务器密码:  ${CYAN}已设置${NC}" || echo -e "    服务器密码:  ${CYAN}无密码${NC}"
     [[ "$STEAMCMD_URL" != "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" ]] && echo -e "    SteamCMD镜像: ${CYAN}${STEAMCMD_URL}${NC}"
     [[ -n "$STEAMCMD_PROXY" ]] && echo -e "    SteamCMD代理: ${CYAN}${STEAMCMD_PROXY}${NC}"
@@ -512,8 +518,8 @@ configure_server() {
         cp "${PAL_SETTINGS_FILE}" "${PAL_SETTINGS_FILE}.bak.$(date +%Y%m%d%H%M%S)"
         info "配置文件已备份"
 
-        # 写入优化后的配置 (基于官方文档)
-        # 参考: https://tech.palworldgame.com/settings-and-operation/configuration
+        # 写入优化后的配置 (基于 v1.0 官方文档)
+        # 参考: https://docs.palworldgame.com/settings-and-operation/configuration
         cat > "${PAL_SETTINGS_FILE}" << EOF
 [/Script/Pal.PalGameWorldSettings]
 OptionSettings=(
@@ -525,8 +531,21 @@ OptionSettings=(
     ServerPlayerMaxNum=${MAX_PLAYERS},
     PublicPort=${DEFAULT_PORT},
     PublicIP="",
+
+    ; ========== 远程管理 ==========
     RCONEnabled=True,
     RCONPort=${RCON_PORT},
+    ; v1.0 REST API，仅本地访问（官方文档明确不建议暴露公网）
+    RESTAPIEnabled=True,
+    RESTAPIPort=${REST_API_PORT},
+
+    ; ========== 跨平台联机 (v1.0 新增，替代旧 AllowConnectPlatform) ==========
+    ; 允许连接的平台，默认 Steam/Xbox/PS5/Mac 全开
+    CrossplayPlatforms=(Steam,Xbox,PS5,Mac),
+
+    ; ========== 日志格式 ==========
+    ; Text 或 Json，Json 便于日志聚合
+    LogFormatType=Text,
 
     ; ========== 性能优化 (官方参数) ==========
     ; Pal同步距离(cm)，降低可减少网络负载，最小5000最大15000
@@ -548,42 +567,62 @@ OptionSettings=(
     ; 启用自动备份(会增加磁盘负载)
     bIsUseBackupSaveData=True,
 
+    ; ========== v1.0 服务器功能开关 ==========
+    ; 允许带 mod 的玩家进服
+    bAllowClientMod=False,
+    ; 硬核模式（死亡不能重生）
+    bHardcore=False,
+    ; 玩家离线后角色留在原地睡眠（可被攻击）
+    bExistPlayerAfterLogout=False,
+    ; 启用快速旅行
+    bEnableFastTravel=True,
+    ; 显示建造者 ID
+    bEnableBuildingPlayerUIdDisplay=False,
+    ; 公会人数上限
+    GuildPlayerMaxNum=20,
+    ; Global Palbox 跨服转移
+    bAllowGlobalPalboxExport=False,
+    bAllowGlobalPalboxImport=False,
+
+    ; ========== 语音聊天 (v1.0 新增) ==========
+    bEnableVoiceChat=False,
+    VoiceChatMaxVolumeDistance=1000,
+    VoiceChatZeroVolumeDistance=3000,
+
     ; ========== 游戏平衡设置 ==========
     ; 经验倍率
     ExpRate=1.000000,
-
     ; 帕鲁捕获率
     PalCaptureRate=1.000000,
-
     ; 帕鲁攻击力倍率
     PalDamageRateAttack=1.000000,
-
     ; 帕鲁防御力倍率
     PalDamageRateDefense=1.000000,
-
     ; 玩家攻击力倍率
     PlayerDamageRateAttack=1.000000,
-
     ; 玩家防御力倍率
     PlayerDamageRateDefense=1.000000,
-
     ; 死亡惩罚: None/Item/ItemAndEquipment/All
     DeathPenalty=Item,
-
     ; 白天时间流速
     DayTimeSpeedRate=1.000000,
-
     ; 夜晚时间流速
     NightTimeSpeedRate=1.000000,
-
     ; 聊天限制(每分钟最大消息数)
     ChatPostLimitPerMinute=10,
 
+    ; ========== 显示设置 ==========
     ; 显示加入/离开消息
     bIsShowJoinLeftMessage=True,
-
     ; 显示玩家列表
     bShowPlayerList=True
+
+    ; ========== PvP (v1.0 试验功能，官方标注非支持) ==========
+    ; 开启 PvP 需同时设以下三项为 True：
+    ; bIsPvP=True,
+    ; bEnablePlayerToPlayerDamage=True,
+    ; bEnableDefenseOtherGuildPlayer=True,
+    ; 详见 https://docs.palworldgame.com/settings-and-operation/pvp
 )
 EOF
         info "配置文件已写入优化参数"
@@ -604,24 +643,22 @@ create_start_script() {
     local start_script="${PAL_SERVER_DIR}/start-palserver.sh"
     cat > "$start_script" << 'STARTSCRIPT'
 #!/bin/bash
-# 幻兽帕鲁服务器优化启动脚本
+# 幻兽帕鲁服务器优化启动脚本 (v1.0)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # 环境变量优化
-export EOS_ENABLED=false              # 禁用 Epic Online Services，减少内存占用
-export MALLOC_ARENA_MAX=2             # 限制 glibc 内存分配器 arena 数量，减少内存碎片
+# MALLOC_ARENA_MAX: 限制 glibc 内存分配器 arena 数量，减少内存碎片
+export MALLOC_ARENA_MAX=2
 export LC_ALL=en_US.UTF-8
 
-# 启动服务器
-# -useperfthreads: 使用性能优化线程
-# -NoAsyncLoadingThread: 禁用异步加载线程
-# -UseMultithreadForDS: 使用多线程
-exec ./PalServer.sh \
-    -useperfthreads \
-    -NoAsyncLoadingThread \
-    -UseMultithreadForDS
+# v1.0 启动参数说明：
+# 官方文档明确指出 -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS
+# 在 v1.0 及以后「不设置可能提升性能」，故默认不传。
+# 如需启用，设置环境变量 PAL_PERF_ARGS 后重启服务即可。
+# 参考: https://docs.palworldgame.com/settings-and-operation/arguments
+exec ./PalServer.sh ${PAL_PERF_ARGS:-}
 STARTSCRIPT
 
     chmod +x "$start_script"
@@ -913,6 +950,7 @@ STEAM_USER="STEAM_USER_PLACEHOLDER"
 PAL_SERVER_DIR="PAL_SERVER_DIR_PLACEHOLDER"
 DEFAULT_PORT=DEFAULT_PORT_PLACEHOLDER
 RCON_PORT=RCON_PORT_PLACEHOLDER
+REST_API_PORT=REST_API_PORT_PLACEHOLDER
 ADMIN_PASS="ADMIN_PASSWORD_PLACEHOLDER"
 STEAMCMD_PROXY="${STEAMCMD_PROXY:-}"
 
@@ -940,6 +978,10 @@ show_help() {
     echo "  rcon        发送 RCON 命令"
     echo "  players     查看在线玩家"
     echo "  broadcast   广播消息"
+    echo "  kick        踢出玩家 (需 SteamID)"
+    echo "  ban         封禁玩家 (需 SteamID)"
+    echo "  unban       解封玩家 (需 SteamID)"
+    echo "  save        立即保存存档"
     echo "  memory      查看内存使用"
     echo "  info        显示服务器信息"
     echo ""
@@ -1010,7 +1052,19 @@ cmd_config() {
 cmd_rcon() {
     if [[ -z "$1" ]]; then
         echo "用法: pal-manager rcon <命令>"
-        echo "可用命令: Info, ShowPlayers, Broadcast <msg>, Save, Shutdown <秒> <msg>, DoExit"
+        echo "v1.0 可用 RCON 命令:"
+        echo "  Info                                    服务器信息"
+        echo "  ShowPlayers                             在线玩家"
+        echo "  Broadcast <msg>                         广播消息"
+        echo "  Save                                    保存存档"
+        echo "  Shutdown <秒> <msg>                     倒计时关闭"
+        echo "  DoExit                                  强制关闭"
+        echo "  KickPlayer <SteamID>                    踢人"
+        echo "  BanPlayer <SteamID>                     封禁"
+        echo "  UnBanPlayer <SteamID>                   解封"
+        echo "  TeleportToPlayer <SteamID>              传送到玩家"
+        echo "  TeleportToMe <SteamID>                  玩家传送到我"
+        echo "  ToggleSpectate                          切换旁观模式"
         return 1
     fi
     /usr/local/bin/pal-rcon --port "$RCON_PORT" --password "$ADMIN_PASS" "$1"
@@ -1028,6 +1082,37 @@ cmd_broadcast() {
     cmd_rcon "Broadcast $*"
 }
 
+cmd_kick() {
+    if [[ -z "$1" ]]; then
+        echo "用法: pal-manager kick <SteamID>"
+        echo "先用 pal-manager players 查看在线玩家 SteamID"
+        return 1
+    fi
+    cmd_rcon "KickPlayer $1"
+}
+
+cmd_ban() {
+    if [[ -z "$1" ]]; then
+        echo "用法: pal-manager ban <SteamID>"
+        echo "先用 pal-manager players 查看在线玩家 SteamID"
+        return 1
+    fi
+    cmd_rcon "BanPlayer $1"
+}
+
+cmd_unban() {
+    if [[ -z "$1" ]]; then
+        echo "用法: pal-manager unban <SteamID>"
+        return 1
+    fi
+    cmd_rcon "UnBanPlayer $1"
+}
+
+cmd_save() {
+    cmd_rcon "Save"
+    echo -e "${GREEN}已发送 Save 命令${NC}"
+}
+
 cmd_memory() {
     echo -e "${CYAN}=== 内存使用情况 ===${NC}"
     systemctl show "$SERVICE" --property=MemoryCurrent --property=MemoryPeak 2>/dev/null || true
@@ -1039,11 +1124,12 @@ cmd_info() {
     local ip
     ip=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
     echo -e "${CYAN}=== 服务器信息 ===${NC}"
-    echo "服务器地址: ${ip}:${DEFAULT_PORT}"
-    echo "RCON端口:   ${RCON_PORT}"
-    echo "状态:       $(systemctl is-active "$SERVICE")"
-    echo "运行时间:   $(systemctl show "$SERVICE" --property=ActiveEnterTimestamp --value 2>/dev/null)"
-    echo "配置文件:   $PAL_SERVER_DIR/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
+    echo "服务器地址:   ${ip}:${DEFAULT_PORT}"
+    echo "RCON端口:     ${RCON_PORT}"
+    echo "REST API端口: ${REST_API_PORT} (仅本地)"
+    echo "状态:         $(systemctl is-active "$SERVICE")"
+    echo "运行时间:     $(systemctl show "$SERVICE" --property=ActiveEnterTimestamp --value 2>/dev/null)"
+    echo "配置文件:     $PAL_SERVER_DIR/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
 }
 
 case "${1:-help}" in
@@ -1059,6 +1145,10 @@ case "${1:-help}" in
     rcon)       shift; cmd_rcon "$@" ;;
     players)    cmd_players ;;
     broadcast)  shift; cmd_broadcast "$@" ;;
+    kick)       shift; cmd_kick "$@" ;;
+    ban)        shift; cmd_ban "$@" ;;
+    unban)      shift; cmd_unban "$@" ;;
+    save)       cmd_save ;;
     memory)     cmd_memory ;;
     info)       cmd_info ;;
     *)          show_help ;;
@@ -1071,6 +1161,7 @@ MANAGEREOF
         -e "s|PAL_SERVER_DIR_PLACEHOLDER|${PAL_SERVER_DIR}|g" \
         -e "s/DEFAULT_PORT_PLACEHOLDER/${DEFAULT_PORT}/g" \
         -e "s/RCON_PORT_PLACEHOLDER/${RCON_PORT}/g" \
+        -e "s/REST_API_PORT_PLACEHOLDER/${REST_API_PORT}/g" \
         -e "s/ADMIN_PASSWORD_PLACEHOLDER/${ADMIN_PASSWORD}/g" \
         "${MANAGER_SCRIPT}"
     chmod +x "${MANAGER_SCRIPT}"
@@ -1140,9 +1231,10 @@ show_result() {
     echo -e "${GREEN}${BOLD}         幻兽帕鲁服务器部署完成!${NC}"
     echo -e "${GREEN}${BOLD}============================================================${NC}"
     echo ""
-    echo -e "  服务器地址:  ${CYAN}${ip_addr}:${DEFAULT_PORT}${NC}"
-    echo -e "  RCON 端口:   ${CYAN}${RCON_PORT}${NC}"
-    echo -e "  管理员密码:  ${CYAN}${ADMIN_PASSWORD}${NC}"
+    echo -e "  服务器地址:    ${CYAN}${ip_addr}:${DEFAULT_PORT}${NC}"
+    echo -e "  RCON 端口:     ${CYAN}${RCON_PORT}${NC}"
+    echo -e "  REST API 端口: ${CYAN}${REST_API_PORT}${NC} (仅本地，未开防火墙)"
+    echo -e "  管理员密码:    ${CYAN}${ADMIN_PASSWORD}${NC}"
     echo ""
     echo -e "  配置文件:    ${PAL_SETTINGS_FILE}"
     echo -e "  服务器目录:  ${PAL_SERVER_DIR}"
@@ -1160,6 +1252,10 @@ show_result() {
     echo -e "    pal-manager config      # 编辑配置"
     echo -e "    pal-manager players     # 查看在线玩家"
     echo -e "    pal-manager broadcast X # 广播消息"
+    echo -e "    pal-manager kick <id>   # 踢人"
+    echo -e "    pal-manager ban <id>    # 封禁"
+    echo -e "    pal-manager unban <id>  # 解封"
+    echo -e "    pal-manager save        # 立即保存存档"
     echo -e "    pal-manager memory      # 查看内存使用"
     echo -e "    pal-manager info        # 显示服务器信息"
     echo ""
@@ -1180,10 +1276,14 @@ show_result() {
     echo -e "  ┌──────────────┬──────────┬────────────────────────────┐"
     echo -e "  │    端口      │   协议   │         用途               │"
     echo -e "  ├──────────────┼──────────┼────────────────────────────┤"
-    echo -e "  │    8211      │   UDP    │  游戏主端口 (必须)         │"
-    echo -e "  │    27015     │   UDP    │  查询端口 (必须)           │"
-    echo -e "  │    25575     │   TCP    │  RCON 远程管理 (可选)      │"
+    echo -e "  │    ${DEFAULT_PORT}      │   UDP    │  游戏主端口 (必须)         │"
+    echo -e "  │    ${QUERY_PORT}     │   UDP    │  查询端口 (必须)           │"
+    echo -e "  │    ${RCON_PORT}     │   TCP    │  RCON 远程管理 (可选)      │"
     echo -e "  └──────────────┴──────────┴────────────────────────────┘"
+    echo ""
+    echo -e "  ${CYAN}REST API 端口 ${REST_API_PORT} 仅本地监听，未开放防火墙。${NC}"
+    echo -e "  官方文档明确不建议 REST API 暴露公网。本地调用示例:"
+    echo -e "    curl -u admin:${ADMIN_PASSWORD} http://127.0.0.1:${REST_API_PORT}/info"
     echo ""
     echo -e "  ${CYAN}配置方式:${NC}"
     echo -e "    腾讯云:  控制台 → 云服务器 → 安全组 → 添加入站规则"

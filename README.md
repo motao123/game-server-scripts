@@ -6,7 +6,7 @@ Linux 游戏专用服务器一键部署脚本集合，支持 Ubuntu 22.04+ / Deb
 
 | 游戏 | 脚本 | 端口 | 协议 | 最低内存 |
 |------|------|------|------|----------|
-| 幻兽帕鲁 (Palworld) | `palworld-server-install.sh` | 8211 / 27015 / 25575 | UDP / UDP / TCP | 16 GB |
+| 幻兽帕鲁 (Palworld) | `palworld-server-install.sh` | 8211 / 27015 / 25575 / 8212(本地) | UDP / UDP / TCP / TCP | 16 GB |
 | Minecraft Java | `minecraft-server-install.sh` | 25565 / 25575 | TCP / TCP | 4 GB |
 | 英灵神殿 (Valheim) | `valheim-server-install.sh` | 2456 / 2457 | UDP / UDP | 4 GB |
 | 泰拉瑞亚 (Terraria) | `terraria-server-install.sh` | 7777 | TCP | 2 GB |
@@ -152,7 +152,7 @@ sudo env STEAMCMD_PROXY="socks5://127.0.0.1:7890" pal-manager update
 
 | 游戏 | 需要放行的端口 |
 |------|---------------|
-| 幻兽帕鲁 | UDP 8211、UDP 27015、TCP 25575（可选） |
+| 幻兽帕鲁 | UDP 8211、UDP 27015、TCP 25575（可选）；REST API 8212 仅本地不开 |
 | Minecraft | TCP 25565、TCP 25575（可选） |
 | 英灵神殿 | UDP 2456、UDP 2457 |
 | 泰拉瑞亚 | TCP 7777 |
@@ -186,6 +186,11 @@ pal-manager backup      # 立即备份存档
 pal-manager config      # 编辑配置文件
 pal-manager players     # 查看在线玩家
 pal-manager broadcast X # 广播消息
+pal-manager kick <id>   # 踢人（需 SteamID）
+pal-manager ban <id>    # 封禁（需 SteamID）
+pal-manager unban <id>  # 解封（需 SteamID）
+pal-manager save        # 立即保存存档
+pal-manager rcon <cmd>  # 发送任意 RCON 命令
 pal-manager memory      # 查看内存使用
 pal-manager info        # 显示服务器信息
 ```
