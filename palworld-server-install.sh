@@ -25,7 +25,6 @@ PAL_SETTINGS_FILE="${PAL_CONFIG_DIR}/PalWorldSettings.ini"
 PAL_SAVE_DIR="${PAL_SERVER_DIR}/Pal/Saved"
 SERVICE_NAME="pal-server"
 MANAGER_SCRIPT="/usr/local/bin/pal-manager"
-UPDATE_SCRIPT="/usr/local/bin/pal-update"
 
 # SteamCMD / 离线包下载配置
 STEAMCMD_URL="${STEAMCMD_URL:-https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz}"
@@ -68,7 +67,6 @@ check_system() {
     if [[ -f /etc/os-release ]]; then
         . /etc/os-release
         OS=$ID
-        OS_VERSION=$VERSION_ID
     else
         error "无法检测操作系统，请使用 Ubuntu 或 Debian"
         exit 1
@@ -228,7 +226,7 @@ optimize_kernel() {
     fi
 
     # net.core 网络优化
-    for param in "net.core.rmem_max=16777216" "net.core.wmem_max=16777216" "net.core.somaxconn=4096"; do
+    for param in "net.core.rmem_max=67108864" "net.core.wmem_max=67108864" "net.core.somaxconn=4096"; do
         local key="${param%%=*}"
         local val="${param#*=}"
         local current
@@ -913,6 +911,7 @@ create_manager_script() {
 SERVICE="pal-server"
 STEAM_USER="STEAM_USER_PLACEHOLDER"
 PAL_SERVER_DIR="PAL_SERVER_DIR_PLACEHOLDER"
+DEFAULT_PORT=DEFAULT_PORT_PLACEHOLDER
 RCON_PORT=RCON_PORT_PLACEHOLDER
 ADMIN_PASS="ADMIN_PASSWORD_PLACEHOLDER"
 STEAMCMD_PROXY="${STEAMCMD_PROXY:-}"
@@ -1040,7 +1039,7 @@ cmd_info() {
     local ip
     ip=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
     echo -e "${CYAN}=== 服务器信息 ===${NC}"
-    echo "服务器地址: ${ip}:8211"
+    echo "服务器地址: ${ip}:${DEFAULT_PORT}"
     echo "RCON端口:   ${RCON_PORT}"
     echo "状态:       $(systemctl is-active "$SERVICE")"
     echo "运行时间:   $(systemctl show "$SERVICE" --property=ActiveEnterTimestamp --value 2>/dev/null)"
@@ -1070,6 +1069,7 @@ MANAGEREOF
     sed -i \
         -e "s/STEAM_USER_PLACEHOLDER/${STEAM_USER}/g" \
         -e "s|PAL_SERVER_DIR_PLACEHOLDER|${PAL_SERVER_DIR}|g" \
+        -e "s/DEFAULT_PORT_PLACEHOLDER/${DEFAULT_PORT}/g" \
         -e "s/RCON_PORT_PLACEHOLDER/${RCON_PORT}/g" \
         -e "s/ADMIN_PASSWORD_PLACEHOLDER/${ADMIN_PASSWORD}/g" \
         "${MANAGER_SCRIPT}"

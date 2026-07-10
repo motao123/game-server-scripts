@@ -259,10 +259,12 @@ SERVER_BIN="${server_bin}"
 CONFIG="${TS_DIR}/serverconfig.txt"
 USE_MONO=${use_mono}
 
+# 用 screen 包裹服务器，使 terraria-manager console 可附着控制台
+# -DmS: 后台 detached 模式但不 fork，保持 systemd Type=simple 的主进程
 if \$USE_MONO; then
-    exec mono "\$SERVER_BIN" -config "\$CONFIG"
+    exec screen -DmS terraria mono "\$SERVER_BIN" -config "\$CONFIG"
 else
-    exec "\$SERVER_BIN" -config "\$CONFIG"
+    exec screen -DmS terraria "\$SERVER_BIN" -config "\$CONFIG"
 fi
 STARTSCRIPT
 
@@ -286,7 +288,8 @@ User=${TS_USER}
 Group=${TS_USER}
 WorkingDirectory=${TS_DIR}
 ExecStart=${TS_DIR}/start.sh
-ExecStop=/bin/kill -SIGINT \$MAINPID
+ExecStop=/usr/bin/screen -S terraria -X stuff "exit\n"
+TimeoutStopSec=30
 Restart=on-failure
 RestartSec=10
 StartLimitIntervalSec=600
@@ -296,7 +299,7 @@ MemoryMax=${TS_MEMORY_MAX}
 OOMScoreAdjust=-500
 
 ProtectSystem=strict
-ReadWritePaths=${TS_DIR}
+ReadWritePaths=${TS_DIR} /run/screen
 PrivateTmp=true
 NoNewPrivileges=true
 
@@ -355,7 +358,7 @@ cmd_logs()    { journalctl -u "$SERVICE" -f --no-pager; }
 
 cmd_console() {
     echo -e "${YELLOW}进入控制台 (Ctrl+A D 退出)${NC}"
-    screen -r terraria 2>/dev/null || echo "未在 screen 中运行"
+    su - terraria -c "screen -r terraria" 2>/dev/null || echo "未在 screen 中运行"
 }
 
 cmd_backup() {
