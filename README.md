@@ -260,8 +260,8 @@ terraria-manager info     # 服务器信息
 
 | 任务 | 频率 | 说明 |
 |------|------|------|
-| 自动备份 | 每 6 小时 | 备份存档到 `/opt/游戏名/backups/`，最多保留 20 份 |
-| 自动重启 | 每日凌晨 4:00 | 仅帕鲁服务器，防止内存泄漏 |
+| 自动备份 | 每 6 小时 | 备份前先 RCON Save 落盘，最多保留 30 份 |
+| 自动重启 | 每日凌晨 4:00 | 仅帕鲁服务器，广播预警 + RCON Save + 优雅重启 |
 
 备份文件命名格式：`游戏名_backup_日期_时间.tar.gz`
 
@@ -284,6 +284,26 @@ terraria-manager info     # 服务器信息
 ```
 
 ## 常见问题
+
+### 重启后存档丢失（每次进服都是新档）
+
+最常见原因：存档目录属主不对，服务以 steam 用户运行但写不进 `Pal/Saved/SaveGames/`。
+
+```bash
+# 检查存档目录属主（应为 steam:steam）
+ls -ld /home/steam/Steam/steamapps/common/PalServer/Pal/Saved/SaveGames
+
+# 若属主是 root，手动修正：
+sudo chown -R steam:steam /home/steam/Steam/steamapps/common/PalServer/Pal/Saved
+```
+
+若以非 root 用户手动运行 `./PalServer.sh`（非 systemd），需将该用户加入 steam 组，否则同样无写权限：
+
+```bash
+sudo usermod -aG steam <你的用户>   # 重新登录生效
+```
+
+推荐使用 `pal-manager` 或 `systemctl` 管理服务，避免权限问题。
 
 ### 连接超时
 

@@ -46,8 +46,9 @@ SERVER_PASSWORD=""
 ADMIN_PASSWORD="admin123"
 
 # 内存限制 (systemd cgroup, 防止内存泄漏拖垮系统)
-MEMORY_MAX="14G"
-MEMORY_HIGH="12G"
+# 由 compute_memory_limits() 根据系统内存动态计算
+MEMORY_MAX=""
+MEMORY_HIGH=""
 
 # 日志
 info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -107,6 +108,23 @@ check_resources() {
     if [[ $disk_free -lt 20 ]]; then
         warn "磁盘剩余空间不足 20GB (当前 ${disk_free}GB)，建议至少 40GB"
     fi
+}
+
+# ==================== 动态计算内存限制 ====================
+compute_memory_limits() {
+    local mem_total
+    mem_total=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo)
+
+    # 给系统留 2G，下限 8G
+    local mem_max=$((mem_total - 2))
+    [[ $mem_max -lt 8 ]] && mem_max=8
+    # High = max - 2，下限 6G（提前软限，避免硬限触发 OOM）
+    local mem_high=$((mem_max - 2))
+    [[ $mem_high -lt 6 ]] && mem_high=6
+
+    MEMORY_MAX="${mem_max}G"
+    MEMORY_HIGH="${mem_high}G"
+    info "内存限制: MemoryMax=${MEMORY_MAX}, MemoryHigh=${MEMORY_HIGH} (系统总内存 ${mem_total}G)"
 }
 
 # ==================== 用户交互配置 ====================
@@ -301,7 +319,7 @@ install_steamcmd() {
     apt-get update -y
 
     # 安装通用依赖
-    apt-get install -y curl wget screen jq
+    apt-get install -y curl wget screen jq python3
 
     case $OS in
         ubuntu)
@@ -575,6 +593,11 @@ EOF
     else
         warn "配置文件未生成，首次启动后请手动检查"
     fi
+
+    # 修正存档/配置目录属主：本函数前面以 root 身份 mkdir 和写配置文件，
+    # 但 systemd 服务以 steam 用户运行，不 chown 会导致存档无写权限（重启丢档）
+    chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
+    info "存档与配置目录属主已修正为 ${STEAM_USER}"
 }
 
 # ==================== 创建启动脚本 ====================
@@ -662,23 +685,58 @@ EOF
     info "systemd 服务创建完成 (MemoryMax=${MEMORY_MAX}, MemoryHigh=${MEMORY_HIGH})"
 }
 
+# ==================== 创建优雅重启脚本 ====================
+create_graceful_restart_script() {
+
+    # 含 RCON 密码，仅 root 可读写执行
+    cat > /usr/local/bin/pal-graceful-restart << GRACEFULEOF
+#!/bin/bash
+# 幻兽帕鲁服务器优雅重启: 广播预警 -> 等待 -> RCON Save -> systemctl restart
+set -e
+
+RCON_PORT=${RCON_PORT}
+RCON_PASS='${ADMIN_PASSWORD}'
+
+echo "[\$(date)] 开始优雅重启流程..."
+
+# 1. 广播预警（60 秒倒计时）
+/usr/local/bin/pal-rcon --port "\$RCON_PORT" --password "\$RCON_PASS" \\
+    "Broadcast Server_restarting_in_60_seconds" || true
+echo "[\$(date)] 已广播重启预警，等待 60 秒..."
+sleep 60
+
+# 2. RCON Save 落盘
+/usr/local/bin/pal-rcon --port "\$RCON_PORT" --password "\$RCON_PASS" "Save" || true
+echo "[\$(date)] 已发送 Save 命令，等待 5 秒落盘..."
+sleep 5
+
+# 3. systemctl restart (ExecStop 走 SIGINT 优雅退出，systemd 自动拉起)
+systemctl restart ${SERVICE_NAME}
+echo "[\$(date)] 重启完成"
+GRACEFULEOF
+
+    chmod 700 /usr/local/bin/pal-graceful-restart
+    chown root:root /usr/local/bin/pal-graceful-restart
+    info "优雅重启脚本已创建: /usr/local/bin/pal-graceful-restart"
+}
+
 # ==================== 创建每日自动重启定时器 ====================
 create_restart_timer() {
 
     # 每天凌晨4点自动重启，防止内存泄漏
     cat > "/etc/systemd/system/${SERVICE_NAME}-restart.service" << EOF
 [Unit]
-Description=Restart Palworld Server (prevent memory leak)
+Description=Graceful restart Palworld Server (save before restart)
 After=${SERVICE_NAME}.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/systemctl restart ${SERVICE_NAME}
+ExecStart=/usr/local/bin/pal-graceful-restart
 EOF
 
     cat > "/etc/systemd/system/${SERVICE_NAME}-restart.timer" << EOF
 [Unit]
-Description=Daily restart for Palworld Server
+Description=Daily graceful restart for Palworld Server
 
 [Timer]
 OnCalendar=*-*-* 04:00:00
@@ -692,7 +750,7 @@ EOF
     systemctl daemon-reload
     systemctl enable "${SERVICE_NAME}-restart.timer"
     systemctl start "${SERVICE_NAME}-restart.timer"
-    info "每日凌晨4:00自动重启已启用 (防止内存泄漏)"
+    info "每日凌晨4:00自动优雅重启已启用 (广播->Save->重启)"
 }
 
 # ==================== 创建存档备份脚本 ====================
@@ -702,6 +760,7 @@ create_backup_script() {
     local backup_script="/usr/local/bin/pal-backup"
 
     mkdir -p "$backup_dir"
+    chown "${STEAM_USER}:${STEAM_USER}" "$backup_dir"
 
     cat > "$backup_script" << BACKUPSCRIPT
 #!/bin/bash
@@ -709,15 +768,20 @@ create_backup_script() {
 
 BACKUP_DIR="${backup_dir}"
 SAVE_DIR="${PAL_SAVE_DIR}"
+RCON_PORT=${RCON_PORT}
+RCON_PASS='${ADMIN_PASSWORD}'
 TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="\${BACKUP_DIR}/pal_backup_\${TIMESTAMP}.tar.gz"
 
 mkdir -p "\$BACKUP_DIR"
 
-# 备份前先通知服务器保存
-echo "正在备份存档..."
+# 备份前先通知服务器保存，确保内存中的存档落盘
+echo "正在保存存档..."
+/usr/local/bin/pal-rcon --port "\$RCON_PORT" --password "\$RCON_PASS" "Save" 2>/dev/null || \\
+    echo "[WARN] RCON 保存失败（服务器可能未启动），继续备份"
+sleep 3
 
-# 压缩存档目录
+echo "正在压缩存档..."
 tar -czf "\$BACKUP_FILE" -C "\$SAVE_DIR" SaveGames 2>/dev/null
 
 if [[ \$? -eq 0 ]]; then
@@ -731,7 +795,9 @@ else
 fi
 BACKUPSCRIPT
 
-    chmod +x "$backup_script"
+    # 备份脚本含 RCON 密码，仅 steam 用户可读写执行
+    chown "${STEAM_USER}:${STEAM_USER}" "$backup_script"
+    chmod 700 "$backup_script"
 
     # 每6小时自动备份一次
     cat > "/etc/systemd/system/${SERVICE_NAME}-backup.service" << EOF
@@ -763,6 +829,79 @@ EOF
     info "每6小时自动备份已启用 (存档路径: ${backup_dir})"
 }
 
+# ==================== 安装 RCON 助手 ====================
+install_rcon_helper() {
+
+    cat > /usr/local/bin/pal-rcon << 'RCONEOF'
+#!/usr/bin/env python3
+"""Minimal RCON client for Palworld dedicated server.
+Protocol: https://developer.valvesoftware.com/wiki/Source_RCON_Protocol
+"""
+import socket
+import struct
+import sys
+import argparse
+
+
+def _pack(pkt_id, pkt_type, body):
+    payload = struct.pack('<ii', pkt_id, pkt_type) + body.encode('utf-8') + b'\x00\x00'
+    return struct.pack('<i', len(payload)) + payload
+
+
+def _recv(sock):
+    size_data = b''
+    while len(size_data) < 4:
+        chunk = sock.recv(4 - len(size_data))
+        if not chunk:
+            return None
+        size_data += chunk
+    size = struct.unpack('<i', size_data)[0]
+    data = b''
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            break
+        data += chunk
+    pkt_id, pkt_type = struct.unpack('<ii', data[:8])
+    body = data[8:-2].decode('utf-8', errors='replace')
+    return pkt_id, pkt_type, body
+
+
+def rcon(host, port, password, command):
+    try:
+        sock = socket.create_connection((host, port), timeout=5)
+    except (socket.timeout, ConnectionRefusedError) as e:
+        print(f'RCON 连接失败: {e}', file=sys.stderr)
+        return 1
+    try:
+        sock.sendall(_pack(1, 3, password))
+        pkt_id, _, _ = _recv(sock)
+        if pkt_id == -1:
+            print('RCON 认证失败，请检查管理员密码', file=sys.stderr)
+            return 1
+        sock.sendall(_pack(2, 2, command))
+        _, _, body = _recv(sock)
+        if body:
+            print(body)
+        return 0
+    finally:
+        sock.close()
+
+
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser(description='Palworld RCON client')
+    ap.add_argument('--host', default='127.0.0.1')
+    ap.add_argument('--port', type=int, default=25575)
+    ap.add_argument('--password', required=True)
+    ap.add_argument('command')
+    args = ap.parse_args()
+    sys.exit(rcon(args.host, args.port, args.password, args.command))
+RCONEOF
+
+    chmod 755 /usr/local/bin/pal-rcon
+    info "RCON 助手已安装: /usr/local/bin/pal-rcon"
+}
+
 # ==================== 创建管理脚本 ====================
 create_manager_script() {
 
@@ -772,7 +911,9 @@ create_manager_script() {
 # 用法: pal-manager [命令]
 
 SERVICE="pal-server"
-RCON_PORT=25575
+STEAM_USER="STEAM_USER_PLACEHOLDER"
+PAL_SERVER_DIR="PAL_SERVER_DIR_PLACEHOLDER"
+RCON_PORT=RCON_PORT_PLACEHOLDER
 ADMIN_PASS="ADMIN_PASSWORD_PLACEHOLDER"
 STEAMCMD_PROXY="${STEAMCMD_PROXY:-}"
 
@@ -816,14 +957,14 @@ cmd_logs_all() { journalctl -u "$SERVICE" --no-pager -n 500; }
 run_steamcmd_update() {
     local steamcmd_args=(
         +login anonymous
-        +force_install_dir "/home/steam/Steam/steamapps/common/PalServer"
+        +force_install_dir "$PAL_SERVER_DIR"
         +app_update 2394010 validate
         +quit
     )
 
     if [[ -n "$STEAMCMD_PROXY" ]]; then
         echo -e "${CYAN}SteamCMD 将通过代理下载: ${STEAMCMD_PROXY}${NC}"
-        sudo -u steam env \
+        sudo -u "$STEAM_USER" env \
             HTTP_PROXY="$STEAMCMD_PROXY" \
             HTTPS_PROXY="$STEAMCMD_PROXY" \
             ALL_PROXY="$STEAMCMD_PROXY" \
@@ -832,7 +973,7 @@ run_steamcmd_update() {
             all_proxy="$STEAMCMD_PROXY" \
             steamcmd "${steamcmd_args[@]}"
     else
-        sudo -u steam steamcmd "${steamcmd_args[@]}"
+        sudo -u "$STEAM_USER" steamcmd "${steamcmd_args[@]}"
     fi
 }
 
@@ -863,17 +1004,17 @@ cmd_backup() {
 }
 
 cmd_config() {
-    ${EDITOR:-nano} "/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
+    ${EDITOR:-nano} "$PAL_SERVER_DIR/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
     echo -e "${YELLOW}配置已修改，重启服务器生效: pal-manager restart${NC}"
 }
 
 cmd_rcon() {
     if [[ -z "$1" ]]; then
         echo "用法: pal-manager rcon <命令>"
+        echo "可用命令: Info, ShowPlayers, Broadcast <msg>, Save, Shutdown <秒> <msg>, DoExit"
         return 1
     fi
-    echo "$1" | timeout 5 nc -u -w1 127.0.0.1 "$RCON_PORT" 2>/dev/null || \
-        echo -e "${YELLOW}RCON 连接失败，请确认 RCON 已启用${NC}"
+    /usr/local/bin/pal-rcon --port "$RCON_PORT" --password "$ADMIN_PASS" "$1"
 }
 
 cmd_players() {
@@ -900,10 +1041,10 @@ cmd_info() {
     ip=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
     echo -e "${CYAN}=== 服务器信息 ===${NC}"
     echo "服务器地址: ${ip}:8211"
-    echo "RCON端口:   25575"
+    echo "RCON端口:   ${RCON_PORT}"
     echo "状态:       $(systemctl is-active "$SERVICE")"
     echo "运行时间:   $(systemctl show "$SERVICE" --property=ActiveEnterTimestamp --value 2>/dev/null)"
-    echo "配置文件:   /home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
+    echo "配置文件:   $PAL_SERVER_DIR/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
 }
 
 case "${1:-help}" in
@@ -925,8 +1066,13 @@ case "${1:-help}" in
 esac
 MANAGEREOF
 
-    # 替换管理员密码
-    sed -i "s/ADMIN_PASSWORD_PLACEHOLDER/${ADMIN_PASSWORD}/g" "${MANAGER_SCRIPT}"
+    # 替换占位符
+    sed -i \
+        -e "s/STEAM_USER_PLACEHOLDER/${STEAM_USER}/g" \
+        -e "s|PAL_SERVER_DIR_PLACEHOLDER|${PAL_SERVER_DIR}|g" \
+        -e "s/RCON_PORT_PLACEHOLDER/${RCON_PORT}/g" \
+        -e "s/ADMIN_PASSWORD_PLACEHOLDER/${ADMIN_PASSWORD}/g" \
+        "${MANAGER_SCRIPT}"
     chmod +x "${MANAGER_SCRIPT}"
     info "管理脚本已创建: ${MANAGER_SCRIPT}"
 }
@@ -1018,8 +1164,8 @@ show_result() {
     echo -e "    pal-manager info        # 显示服务器信息"
     echo ""
     echo -e "  ${YELLOW}${BOLD}自动任务:${NC}"
-    echo -e "    每日凌晨4:00  自动重启 (防止内存泄漏)"
-    echo -e "    每6小时       自动备份存档"
+    echo -e "    每日凌晨4:00  自动优雅重启 (广播->Save->重启)"
+    echo -e "    每6小时       自动备份存档 (含 RCON Save 落盘)"
     echo ""
     echo -e "  ${YELLOW}${BOLD}systemctl 命令:${NC}"
     echo -e "    sudo systemctl start ${SERVICE_NAME}"
@@ -1044,6 +1190,12 @@ show_result() {
     echo -e "    阿里云:  控制台 → ECS → 安全组 → 配置规则 → 入方向"
     echo -e "    棉花云:  控制台 → 云服务器 → 防火墙 → 添加规则"
     echo ""
+    echo -e "  ${YELLOW}${BOLD}手动开服注意事项 (非 systemd 管理):${NC}"
+    echo -e "  若以非 root 用户手动运行 ./PalServer.sh，需将该用户加入 steam 组:"
+    echo -e "    sudo usermod -aG steam <你的用户>"
+    echo -e "  否则存档目录 (steam 属主) 无写权限，会导致存档丢失。"
+    echo -e "  ${CYAN}推荐使用 pal-manager / systemctl 管理服务，避免此问题。${NC}"
+    echo ""
     echo -e "${GREEN}${BOLD}============================================================${NC}"
 }
 
@@ -1062,6 +1214,7 @@ main() {
     check_root
     check_system
     check_resources
+    compute_memory_limits
     user_config
 
     # 显示部署步骤概览
@@ -1073,13 +1226,15 @@ main() {
     echo -e "  [ 5] 下载帕鲁服务器 (AppID: 2394010)"
     echo -e "  [ 6] 创建优化启动脚本"
     echo -e "  [ 7] 配置服务器参数 (PalWorldSettings.ini)"
-    echo -e "  [ 8] 创建 systemd 服务 + 内存限制"
-    echo -e "  [ 9] 创建每日自动重启定时器"
-    echo -e "  [10] 创建存档自动备份"
-    echo -e "  [11] 创建管理脚本 (pal-manager)"
-    echo -e "  [12] 配置防火墙端口"
-    echo -e "  [13] 配置日志轮转"
-    echo -e "  [14] 启动服务器"
+    echo -e "  [ 8] 创建 systemd 服务 + 内存限制 (MemoryMax=${MEMORY_MAX})"
+    echo -e "  [ 9] 安装 RCON 助手 (pal-rcon)"
+    echo -e "  [10] 创建优雅重启脚本 (广播->Save->重启)"
+    echo -e "  [11] 创建每日自动重启定时器"
+    echo -e "  [12] 创建存档自动备份"
+    echo -e "  [13] 创建管理脚本 (pal-manager)"
+    echo -e "  [14] 配置防火墙端口"
+    echo -e "  [15] 配置日志轮转"
+    echo -e "  [16] 启动服务器"
     echo ""
     echo ""
     read -rp "回车开始部署 / 输入 n 取消: " confirm
@@ -1088,7 +1243,7 @@ main() {
         exit 0
     fi
 
-    local total_steps=14
+    local total_steps=16
     local current_step=0
 
     run_step() {
@@ -1120,6 +1275,12 @@ main() {
 
     run_step "创建 systemd 服务"
     create_systemd_service
+
+    run_step "安装 RCON 助手"
+    install_rcon_helper
+
+    run_step "创建优雅重启脚本"
+    create_graceful_restart_script
 
     run_step "创建每日自动重启定时器"
     create_restart_timer
