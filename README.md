@@ -259,6 +259,68 @@ terraria-manager info     # 服务器信息
 
 ---
 
+## Web 管理面板（幻兽帕鲁）
+
+可选组件，为幻兽帕鲁服务器提供可视化网页端，免去命令行操作。
+
+### 安装
+
+先完成幻兽帕鲁服务器部署（`palworld-server-install.sh`），再额外跑 Web 面板安装脚本：
+
+```bash
+cd game-server-scripts
+chmod +x palworld-web-install.sh
+sudo ./palworld-web-install.sh
+```
+
+安装过程交互配置 Web 端口、绑定地址、Web 密码（留空自动生成 18 位随机密码）。从 `PalWorldSettings.ini` 自动读取 RCON 端口和管理员密码，无需重复输入。
+
+### 功能
+
+- **仪表盘**：服务状态 / 启动时间 / 当前内存 / 峰值内存
+- **服务控制**：启动 / 停止 / 重启 / 保存存档（一键）
+- **广播消息**：网页输入，游戏内全服广播
+- **在线玩家**：查看玩家名 + SteamID，一键踢出 / 封禁 / 解封
+- **日志查看**：最近 200 行，30 秒自动刷新
+
+### 访问
+
+安装完成会打印访问地址和密码。默认端口 8080。
+
+```bash
+# 查看服务状态
+systemctl status pal-web
+
+# 查看登录日志
+journalctl -u pal-web | grep login
+
+# 重启面板
+sudo systemctl restart pal-web
+```
+
+### 安全
+
+Web 面板能控制服务器（启停/踢人/广播），公网暴露务必注意：
+
+1. **强密码**：Web 密码不要与游戏 AdminPassword 相同，安装时自动生成的 18 位随机密码最安全
+2. **反代 HTTPS**：强烈建议用 Nginx/Caddy 反代 + HTTPS，避免密码明文传输
+3. **限速保护**：登录接口每 IP 每分钟最多 5 次，防暴力破解
+4. **Session 绑 IP**：cookie 窃取后换 IP 无法使用
+5. **定期查日志**：`journalctl -u pal-web` 检查异常登录
+6. **不用时关公网**：改 `WEB_BIND=127.0.0.1` 重装，仅本地访问（需 SSH 隧道）
+
+### 卸载 Web 面板
+
+```bash
+sudo systemctl stop pal-web
+sudo systemctl disable pal-web
+sudo rm /etc/systemd/system/pal-web.service
+sudo rm /usr/local/bin/pal-web-ui /etc/pal-web.env
+sudo systemctl daemon-reload
+```
+
+---
+
 ## 自动任务
 
 脚本会自动配置以下定时任务：
