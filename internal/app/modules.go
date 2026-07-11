@@ -75,7 +75,8 @@ func (s *Server) handleFilesRead(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"path": path, "content": string(data)})
+	enc := detectEncoding(data)
+	writeJSON(w, map[string]any{"path": path, "content": string(data), "encoding": enc})
 }
 
 func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +184,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			id, _ := msg["sessionId"].(string)
 			s.terminal.Close(id)
 			_ = conn.WriteJSON(map[string]any{"type": "terminal-closed", "sessionId": id})
+		case "reconnect-session":
+			id, _ := msg["sessionId"].(string)
+			if !s.terminal.Reconnect(conn, id) {
+				_ = conn.WriteJSON(map[string]any{"type": "session-reconnect-failed", "sessionId": id})
+			}
 		case "system-stats":
 			_ = conn.WriteJSON(map[string]any{"type": "system-stats", "data": map[string]any{"ok": true}})
 		default:

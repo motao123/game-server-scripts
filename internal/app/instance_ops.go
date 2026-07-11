@@ -13,6 +13,17 @@ import (
 	"github.com/google/uuid"
 )
 
+func runInstanceCommand(inst Instance, command string) ([]byte, error) {
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("cmd", "/C", command)
+		cmd.Dir = inst.WorkingDirectory
+		return cmd.CombinedOutput()
+	}
+	cmd := exec.Command("sh", "-lc", command)
+	cmd.Dir = inst.WorkingDirectory
+	return cmd.CombinedOutput()
+}
+
 func (s *InstanceStore) Create(req Instance) (Instance, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -20,7 +31,15 @@ func (s *InstanceStore) Create(req Instance) (Instance, error) {
 		return Instance{}, fmt.Errorf("实例名称不能为空")
 	}
 	req.ID = uuid.NewString()
-	req.Status = "stopped"
+	if req.Status == "" {
+		req.Status = "stopped"
+	}
+	if req.StopCommand == "" {
+		req.StopCommand = "ctrl+c"
+	}
+	if req.InstanceType == "" {
+		req.InstanceType = "generic"
+	}
 	req.CreatedAt = time.Now().Format(time.RFC3339)
 	s.list = append(s.list, req)
 	return req, s.saveLocked()
@@ -34,6 +53,12 @@ func (s *InstanceStore) Update(id string, req Instance) (Instance, error) {
 			req.ID = id
 			if req.CreatedAt == "" {
 				req.CreatedAt = s.list[i].CreatedAt
+			}
+			if req.StopCommand == "" {
+				req.StopCommand = "ctrl+c"
+			}
+			if req.InstanceType == "" {
+				req.InstanceType = "generic"
 			}
 			s.list[i] = req
 			return req, s.saveLocked()
@@ -89,13 +114,56 @@ func (s *InstanceStore) saveLocked() error {
 	return os.WriteFile(s.path, data, 0644)
 }
 
-func runInstanceCommand(inst Instance, command string) ([]byte, error) {
-	if runtime.GOOS == "windows" {
-		cmd := exec.Command("cmd", "/C", command)
-		cmd.Dir = inst.WorkingDirectory
-		return cmd.CombinedOutput()
+func detectStartScript(workingDirectory string) string {
+	if workingDirectory == "" {
+		return ""
 	}
-	cmd := exec.Command("sh", "-lc", command)
-	cmd.Dir = inst.WorkingDirectory
-	return cmd.CombinedOutput()
+	entries, err := os.ReadDir(workingDirectory)
+	if err != nil {
+		return ""
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	scripts := []string{"start.sh", "run.sh"}
+	if runtime.GOOS == "windows" {
+		scripts = []string{"start.bat", "run.bat", "start.cmd", "run.cmd"}
+	}
+	for _, s := range scripts {
+		for _, n := range names {
+			if n == s {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func detectJarFile(workingDirectory string) string {
+	if workingDirectory == "" {
+		return ""
+	}
+	entries, err := os.ReadDir(workingDirectory)
+	if err != nil {
+		return ""
+	}
+	var jars []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jar") {
+			jars = append(jars, e.Name())
+		}
+	}
+	if len(jars) == 0 {
+		return ""
+	}
+	if len(jars) == 1 {
+		return jars[0]
+	}
+	for _, j := range jars {
+		if strings.Contains(strings.ToLower(j), "server") {
+			return j
+		}
+	}
+	return jars[0]
 }
