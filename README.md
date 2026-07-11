@@ -521,6 +521,56 @@ sudo systemctl daemon-reload
 
 ---
 
+## 升级脚本
+
+脚本有更新（bug 修复 / 新功能）时，按以下步骤升级。**不影响游戏存档、配置、Web 密码**。
+
+### 1. 拉取最新脚本
+
+```bash
+cd game-server-scripts
+git pull origin master
+```
+
+### 2. 重跑主脚本（更新 pal-rcon / pal-stop / systemd 服务 / 配置格式）
+
+```bash
+sudo ./palworld-server-install.sh
+```
+
+主脚本会：
+- 更新 `/usr/local/bin/pal-rcon`、`pal-stop`、`pal-graceful-restart`、`pal-backup`、`pal-manager`
+- 重建 systemd 服务（pal-server.service + 定时器）
+- **修复配置文件格式**（单行 + chmod 444 只读，防止 Palworld v1.0 启动时重写破坏格式）
+- 不删存档、不改密码
+
+### 3. 重跑 Web 面板安装（更新 Web 面板代码 + REST_API_PORT 配置）
+
+```bash
+sudo ./palworld-web-install.sh
+```
+
+Web 安装脚本会：
+- 覆盖 `/usr/local/bin/pal-web-ui`
+- 重新读取 `PalWorldSettings.ini` 写入 `/etc/pal-web.env`（含 `REST_API_PORT`，玩家列表走 REST API）
+- 保留 Web 密码（密码非空时不重新生成）
+- 自动重启 `pal-web` 服务
+
+### 4. 重启游戏服务器让新配置生效
+
+```bash
+pal-manager restart
+```
+
+### 升级注意事项
+
+- **配置文件 chmod 444 只读**：Palworld v1.0 启动时会重写 `PalWorldSettings.ini` 破坏格式（去引号/逗号/结束括号），导致 RCON 等配置不生效。必须保持只读。Web 面板保存配置时会自动临时解除只读、写入后重新设只读。
+- **改 RCON/REST 配置后**：如果改了 `PalWorldSettings.ini` 的 `RCONPort`/`AdminPassword`/`RESTAPIPort`，需重跑 Web 安装脚本重新读取配置写入 `/etc/pal-web.env`。
+- **存档安全**：升级不会触碰 `Pal/Saved/SaveGames/`，存档和角色不丢。
+- **只升级 Web 面板**：如果只想更新 Web 面板（主脚本无改动），可跳过第 2 步，只跑第 3 步。
+
+---
+
 ## 自动任务
 
 脚本会自动配置以下定时任务：
