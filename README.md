@@ -352,6 +352,35 @@ sudo env WEB_PORT=8080 WEB_BIND=0.0.0.0 WEB_PASSWORD='你的强密码' \
 - 显示 `journalctl -u pal-server -n 200` 的最后 200 行
 - 30 秒自动刷新，自动滚到底部
 
+**配置管理**（v2 新增，顶部 tab 切换到「配置管理」）
+- 可视化编辑 `PalWorldSettings.ini` 全部 45 个配置项，分 11 类：基础 / 远程管理 / 跨平台 / 日志 / 性能 / 存档 / 功能 / 语音 / 游戏平衡 / 显示 / PvP（试验）
+- 类型感知控件：文本框 / 密码框 / 数字框（含范围验证）/ 开关 / 下拉 / 多选
+- 左侧分类导航，右侧表单，底部「保存」「保存并重启」两个按钮
+- 保存前自动备份原文件到 `PalWorldSettings.ini.bak.<时间戳>`
+- 写入后自动 `chown` 回 `steam:steam`，避免 root 写入导致属主错乱
+- 修改 `RCONEnabled`/`RCONPort`/`AdminPassword` 后需重启服务器才生效（Web 面板本身不受影响，因为 RCON 配置在启动时读取）
+
+### 更新 Web 面板
+
+Web 面板有更新时（功能增强或 bug 修复），重新跑安装脚本即可升级，**不影响游戏服务器、存档、Web 密码**：
+
+```bash
+cd game-server-scripts
+git pull origin master        # 拉取最新脚本
+sudo ./palworld-web-install.sh
+```
+
+安装脚本会：
+- 覆盖 `/usr/local/bin/pal-web-ui`（应用新代码）
+- 保留 `/etc/pal-web.env`（Web 密码、RCON 配置不变，因为密码非空时不重新生成）
+- 自动重启 `pal-web` 服务
+
+如需同时改 Web 密码或绑定地址，加环境变量：
+
+```bash
+sudo env WEB_PASSWORD='新密码' WEB_BIND=127.0.0.1 ./palworld-web-install.sh
+```
+
 ### 访问方式
 
 **方式一：公网直接访问**（`WEB_BIND=0.0.0.0` 时）
