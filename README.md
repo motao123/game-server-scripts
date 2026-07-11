@@ -276,8 +276,25 @@ terraria-manager info     # 服务器信息
 
 ### 安装
 
+**1. 获取脚本**（部署主脚本时已克隆过仓库，可直接 `cd game-server-scripts` 跳过本步）：
+
 ```bash
+# CNB（推荐）
+git clone https://cnb.cool/code_free/game-server-scripts.git
 cd game-server-scripts
+
+# 或 Gitee（国内更快）
+git clone https://gitee.com/pigfei/game-server-scripts.git
+cd game-server-scripts
+
+# 或 GitHub
+git clone git@github.com:motao123/game-server-scripts.git
+cd game-server-scripts
+```
+
+**2. 运行安装脚本**：
+
+```bash
 chmod +x palworld-web-install.sh
 sudo ./palworld-web-install.sh
 ```
