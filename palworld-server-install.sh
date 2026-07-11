@@ -489,6 +489,10 @@ configure_server() {
     mkdir -p "${PAL_SAVE_DIR}/SaveGames"
     mkdir -p "${PAL_SAVE_DIR}/Backup"
 
+    # 立即 chown：确保下方「首次启动生成配置」(若触发) 时 steam 用户能写入
+    # 不然 steam 进程在 root 属主目录下跑，ServerUID/配置文件写不进
+    chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
+
     # 复制默认配置文件
     local default_config="${PAL_SERVER_DIR}/DefaultPalWorldSettings.ini"
     if [[ -f "$default_config" ]] && [[ ! -f "${PAL_SETTINGS_FILE}" ]]; then
@@ -631,8 +635,7 @@ EOF
         warn "配置文件未生成，首次启动后请手动检查"
     fi
 
-    # 修正存档/配置目录属主：本函数前面以 root 身份 mkdir 和写配置文件，
-    # 但 systemd 服务以 steam 用户运行，不 chown 会导致存档无写权限（重启丢档）
+    # 写配置文件以 root 身份执行 cat >，属主变 root，需再 chown 一次
     chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
     info "存档与配置目录属主已修正为 ${STEAM_USER}"
 }
@@ -682,7 +685,11 @@ User=${STEAM_USER}
 Group=${STEAM_USER}
 WorkingDirectory=${PAL_SERVER_DIR}
 ExecStart=/bin/bash ${PAL_SERVER_DIR}/start-palserver.sh
-ExecStop=/bin/kill -SIGINT \$MAINPID
+ExecStop=/usr/local/bin/pal-stop \$MAINPID
+
+; 关闭: pal-stop 先 RCON Save 落盘，再发 SIGINT
+KillSignal=SIGINT
+TimeoutStopSec=300
 
 ; 重启策略: 失败后10秒重启，10分钟内最多重启5次
 Restart=on-failure
@@ -935,6 +942,32 @@ RCONEOF
 
     chmod 755 /usr/local/bin/pal-rcon
     info "RCON 助手已安装: /usr/local/bin/pal-rcon"
+}
+
+# ==================== 安装优雅停止脚本 ====================
+install_stop_script() {
+
+    # systemd ExecStop 调用：RCON Save 落盘 -> sleep 3 -> SIGINT
+    # 含 RCON 密码，与 pal-graceful-restart 同策略（heredoc 直接展开变量，避免 sed 特殊字符问题）
+    cat > /usr/local/bin/pal-stop << STOPEOF
+#!/bin/bash
+# Palworld 优雅停止: RCON Save 落盘 -> 等待 -> SIGINT
+# 由 systemd ExecStop 调用，\$1 = \$MAINPID
+RCON_PORT=${RCON_PORT}
+RCON_PASS='${ADMIN_PASSWORD}'
+PID="\$1"
+
+# RCON Save（服务器可能未启动或 RCON 不可用，忽略错误）
+/usr/local/bin/pal-rcon --port "\$RCON_PORT" --password "\$RCON_PASS" "Save" 2>/dev/null || true
+sleep 3
+
+# 发 SIGINT 让 Palworld 优雅退出（systemd 之后会按 TimeoutStopSec 兜底 SIGKILL）
+kill -SIGINT "\$PID" 2>/dev/null || true
+STOPEOF
+
+    chmod 755 /usr/local/bin/pal-stop
+    chown root:root /usr/local/bin/pal-stop
+    info "优雅停止脚本已安装: /usr/local/bin/pal-stop (ExecStop 自动 Save)"
 }
 
 # ==================== 创建管理脚本 ====================
@@ -1328,13 +1361,14 @@ main() {
     echo -e "  [ 7] 配置服务器参数 (PalWorldSettings.ini)"
     echo -e "  [ 8] 创建 systemd 服务 + 内存限制 (MemoryMax=${MEMORY_MAX})"
     echo -e "  [ 9] 安装 RCON 助手 (pal-rcon)"
-    echo -e "  [10] 创建优雅重启脚本 (广播->Save->重启)"
-    echo -e "  [11] 创建每日自动重启定时器"
-    echo -e "  [12] 创建存档自动备份"
-    echo -e "  [13] 创建管理脚本 (pal-manager)"
-    echo -e "  [14] 配置防火墙端口"
-    echo -e "  [15] 配置日志轮转"
-    echo -e "  [16] 启动服务器"
+    echo -e "  [10] 创建优雅停止脚本 (ExecStop 自动 Save)"
+    echo -e "  [11] 创建优雅重启脚本 (广播->Save->重启)"
+    echo -e "  [12] 创建每日自动重启定时器"
+    echo -e "  [13] 创建存档自动备份"
+    echo -e "  [14] 创建管理脚本 (pal-manager)"
+    echo -e "  [15] 配置防火墙端口"
+    echo -e "  [16] 配置日志轮转"
+    echo -e "  [17] 启动服务器"
     echo ""
     echo ""
     read -rp "回车开始部署 / 输入 n 取消: " confirm
@@ -1343,7 +1377,7 @@ main() {
         exit 0
     fi
 
-    local total_steps=16
+    local total_steps=17
     local current_step=0
 
     run_step() {
@@ -1378,6 +1412,9 @@ main() {
 
     run_step "安装 RCON 助手"
     install_rcon_helper
+
+    run_step "创建优雅停止脚本"
+    install_stop_script
 
     run_step "创建优雅重启脚本"
     create_graceful_restart_script

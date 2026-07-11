@@ -354,7 +354,11 @@ sudo systemctl daemon-reload
 
 ### 重启后存档丢失（每次进服都是新档）
 
-最常见原因：存档目录属主不对，服务以 steam 用户运行但写不进 `Pal/Saved/SaveGames/`。
+**新版本脚本（2026-07-11 起）已修复此问题**：所有关闭路径（`systemctl stop/restart`、`pal-manager stop/restart`、机器重启触发的 systemd stop）都会先 RCON `Save` 落盘再 SIGINT 退出，`TimeoutStopSec=300` 给大存档 5 分钟落盘窗口。手动重启无需先 `pal-manager save`。
+
+若仍遇到丢档，按以下顺序排查：
+
+**1. 检查存档目录属主**（最常见原因：旧脚本部署的服务器目录属主是 root）
 
 ```bash
 # 检查存档目录属主（应为 steam:steam）
@@ -363,6 +367,22 @@ ls -ld /home/steam/Steam/steamapps/common/PalServer/Pal/Saved/SaveGames
 # 若属主是 root，手动修正：
 sudo chown -R steam:steam /home/steam/Steam/steamapps/common/PalServer/Pal/Saved
 ```
+
+**2. 确认 ExecStop 脚本存在**（新版本才有，旧版本用的是 `/bin/kill -SIGINT`）
+
+```bash
+ls -l /usr/local/bin/pal-stop
+# 应为 -rwxr-xr-x root root
+
+# 查看 systemd 服务是否用了 pal-stop
+systemctl cat pal-server | grep -E 'ExecStop|TimeoutStopSec'
+# 应为: ExecStop=/usr/local/bin/pal-stop $MAINPID
+#       TimeoutStopSec=300
+```
+
+若不存在，说明用的是旧脚本，重新跑 `sudo ./palworld-server-install.sh` 升级（不会清存档，只会补 chown 和 pal-stop）。
+
+**3. 非 root 用户手动开服**
 
 若以非 root 用户手动运行 `./PalServer.sh`（非 systemd），需将该用户加入 steam 组，否则同样无写权限：
 
