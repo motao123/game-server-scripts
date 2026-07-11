@@ -441,6 +441,10 @@ def get_saves():
     return saves
 
 
+def valid_backup_name(name):
+    return isinstance(name, str) and re.fullmatch(r"pal_backup_[A-Za-z0-9_.-]+\.tar\.gz", name) is not None
+
+
 def backup_save():
     """调 pal-backup 脚本立即备份"""
     import subprocess
@@ -456,7 +460,7 @@ def backup_save():
 def restore_save(name):
     """恢复备份：RCON Save -> 停服 -> 解压覆盖 SaveGames -> chown -> 启服"""
     import subprocess, tempfile
-    if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+    if not valid_backup_name(name):
         return False, "无效的备份文件名"
     backup_file = os.path.join(BACKUP_DIR, name)
     if not os.path.isfile(backup_file):
@@ -514,7 +518,7 @@ def restore_save(name):
 
 def delete_save(name):
     """删除备份文件"""
-    if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+    if not valid_backup_name(name):
         return False, "无效的备份文件名"
     backup_file = os.path.join(BACKUP_DIR, name)
     if not os.path.isfile(backup_file):
@@ -832,6 +836,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.require_auth():
                 return
             self.send_json({"saves": get_saves()})
+        elif self.path.startswith("/api/saves/download"):
+            if not self.require_auth():
+                return
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            name = (qs.get("name", [""])[0] or "").strip()
+            if not valid_backup_name(name):
+                self.send_json({"error": "无效文件名（必须 pal_backup_*.tar.gz）"}, 400)
+                return
+            filepath = os.path.join(BACKUP_DIR, name)
+            if not os.path.isfile(filepath):
+                self.send_json({"error": "文件不存在"}, 404)
+                return
+            with open(filepath, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/gzip")
+            self.send_header("Content-Disposition", f'attachment; filename="{name}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
         elif self.path == "/api/whitelist":
             if not self.require_auth():
                 return
@@ -919,6 +944,32 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return
             ok, msg = delete_save(name)
             self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/saves/upload":
+            import base64
+            name = body.get("name", "").strip()
+            content = body.get("content", "")
+            if not valid_backup_name(name):
+                self.send_json({"error": "无效文件名（必须 pal_backup_*.tar.gz）"}, 400)
+                return
+            try:
+                data = base64.b64decode(content)
+            except Exception:
+                self.send_json({"error": "无效的文件内容"}, 400)
+                return
+            if len(data) > 500 * 1024 * 1024:  # 500MB 上限
+                self.send_json({"error": "文件过大（>500MB）"}, 400)
+                return
+            filepath = os.path.join(BACKUP_DIR, name)
+            with open(filepath, "wb") as f:
+                f.write(data)
+            try:
+                import pwd, grp
+                uid = pwd.getpwnam(STEAM_USER).pw_uid
+                gid = grp.getgrnam(STEAM_USER).gr_gid
+                os.chown(filepath, uid, gid)
+            except Exception:
+                pass
+            self.send_json({"ok": True, "message": f"已上传 {name} ({len(data)} 字节)"})
         elif self.path == "/api/whitelist/add":
             ok, msg = add_whitelist(body.get("name", ""), body.get("steamid", ""), body.get("playeruid", ""))
             self.send_json({"ok": ok, "message": msg})
@@ -980,17 +1031,20 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Palworld 管理面板</title>
 <style>
 :root {
-  --bg: #0f172a;
-  --card: #1e293b;
-  --card-hover: #334155;
-  --primary: #6366f1;
-  --primary-hover: #4f46e5;
-  --accent: #10b981;
-  --danger: #ef4444;
-  --warning: #f59e0b;
-  --text: #e2e8f0;
-  --text-muted: #94a3b8;
-  --border: #334155;
+  --bg: #f5f5f5;
+  --card: #ffffff;
+  --card-hover: #f0f0f0;
+  --primary: #1976D2;
+  --primary-hover: #1565C0;
+  --secondary: #26A69A;
+  --accent: #9C27B0;
+  --positive: #21BA45;
+  --danger: #C10015;
+  --info: #31CCEC;
+  --warning: #F2C037;
+  --text: #1d1d1d;
+  --text-muted: #666666;
+  --border: #e0e0e0;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -1006,7 +1060,7 @@ body {
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid var(--border);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
 }
 .topbar h1 { font-size: 18px; color: var(--text); font-weight: 600; }
 .topbar h1 span { color: var(--primary); }
@@ -1029,7 +1083,7 @@ body {
   font-size: 12px;
   font-weight: bold;
 }
-.badge.active { background: var(--accent); color: #fff; }
+.badge.active { background: var(--positive); color: #fff; }
 .badge.inactive { background: var(--danger); color: #fff; }
 .btn {
   padding: 8px 16px;
@@ -1044,14 +1098,16 @@ body {
 .btn:hover { opacity: 0.9; transform: translateY(-1px); }
 .btn:active { transform: translateY(0); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-.btn-start { background: var(--accent); }
-.btn-stop { background: var(--warning); }
+.btn-start { background: var(--positive); }
+.btn-stop { background: var(--warning); color: var(--text); }
 .btn-restart { background: var(--primary); }
-.btn-save { background: var(--accent); }
+.btn-save { background: var(--positive); }
+.btn-upload { background: var(--secondary); }
+.btn-download { background: var(--info); padding: 4px 10px; font-size: 12px; }
 .btn-save-restart { background: var(--primary); }
-.btn-kick { background: var(--warning); padding: 4px 10px; font-size: 12px; }
+.btn-kick { background: var(--warning); padding: 4px 10px; font-size: 12px; color: var(--text); }
 .btn-ban { background: var(--danger); padding: 4px 10px; font-size: 12px; }
-.btn-logout { background: var(--card-hover); }
+.btn-logout { background: var(--card-hover); color: var(--text); }
 .container { max-width: 1200px; margin: 24px auto; padding: 0 20px; }
 .cards {
   display: grid;
@@ -1064,7 +1120,7 @@ body {
   padding: 18px;
   border-radius: 12px;
   border-left: 4px solid var(--primary);
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.10);
   transition: transform 0.2s;
 }
 .card:hover { transform: translateY(-2px); }
@@ -1075,7 +1131,7 @@ body {
   padding: 20px;
   border-radius: 12px;
   margin-bottom: 20px;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.10);
 }
 .panel h2 {
   font-size: 15px;
@@ -1087,7 +1143,7 @@ body {
 }
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 input[type="text"], input[type="password"], input[type="number"], select, textarea {
-  background: var(--bg);
+  background: var(--card);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 9px 12px;
@@ -1101,13 +1157,13 @@ input[type="text"], input[type="password"], input[type="number"], select, textar
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+  box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.12);
 }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
 th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 .logs {
-  background: #0d0d1a;
+  background: #263238;
   padding: 14px;
   border-radius: 6px;
   font-family: "Cascadia Code", Consolas, monospace;
@@ -1125,7 +1181,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   border-radius: 12px;
   width: 100%;
   max-width: 380px;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.16);
 }
 .login-card h1 { text-align: center; margin-bottom: 24px; color: var(--primary); font-size: 22px; }
 .login-card .error { color: var(--danger); font-size: 13px; margin-top: 10px; text-align: center; }
@@ -1141,23 +1197,23 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   transform: translateY(10px);
   transition: all 0.3s;
   z-index: 999;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
 }
 .toast.show { opacity: 1; transform: translateY(0); }
-.toast.ok { background: var(--accent); }
+.toast.ok { background: var(--positive); }
 .toast.err { background: var(--danger); }
 
 /* 首页美化 */
 .status-card {
-  background: linear-gradient(135deg, var(--card) 0%, var(--card-hover) 100%);
+  background: var(--card);
   padding: 24px;
   border-radius: 12px;
   margin-bottom: 16px;
   display: flex;
   align-items: center;
   gap: 18px;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
-  border-left: 4px solid var(--accent);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.10);
+  border-left: 4px solid var(--positive);
 }
 .status-card.inactive { border-left-color: var(--danger); }
 .status-card .status-icon {
@@ -1165,11 +1221,11 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 24px;
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--accent);
+  background: rgba(33, 186, 69, 0.15);
+  color: var(--positive);
 }
 .status-card.inactive .status-icon {
-  background: rgba(239, 68, 68, 0.15);
+  background: rgba(193, 0, 21, 0.12);
   color: var(--danger);
 }
 .status-card .status-text { flex: 1; }
@@ -1180,7 +1236,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   background: var(--card);
   padding: 18px;
   border-radius: 12px;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.10);
   border-left: 4px solid var(--primary);
 }
 .metric-card .metric-head {
@@ -1199,7 +1255,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
 }
 .metric-card .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent), var(--primary));
+  background: linear-gradient(90deg, var(--positive), var(--primary));
   border-radius: 3px;
   transition: width 0.6s ease;
 }
@@ -1218,8 +1274,8 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
 .player-row:last-child { margin-bottom: 0; }
 .player-row .player-dot {
   width: 8px; height: 8px; border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
+  background: var(--positive);
+  box-shadow: 0 0 8px rgba(33, 186, 69, 0.5);
   flex-shrink: 0;
 }
 .player-row .player-name { flex: 1; font-weight: 600; }
@@ -1238,7 +1294,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
 .logs .log-line { padding: 2px 0; }
 .logs .log-error { color: var(--danger); }
 .logs .log-warn { color: var(--warning); }
-.logs .log-connect, .logs .log-join { color: var(--accent); }
+.logs .log-connect, .logs .log-join { color: var(--positive); }
 .logs .log-disconnect, .logs .log-leave { color: var(--text-muted); }
 
 .panel-header {
@@ -1262,8 +1318,8 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   background: var(--card);
   padding: 16px;
   border-radius: 10px;
-  border-left: 4px solid var(--accent);
-  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  border-left: 4px solid var(--secondary);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
 }
 .sys-card .sys-head {
   display: flex; align-items: center; gap: 6px;
@@ -1276,7 +1332,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden;
 }
 .sys-card .sys-bar-fill {
-  height: 100%; background: linear-gradient(90deg, var(--accent), var(--primary));
+  height: 100%; background: linear-gradient(90deg, var(--secondary), var(--primary));
   border-radius: 3px; transition: width 0.6s ease;
 }
 .sys-card .sys-bar-fill.high { background: linear-gradient(90deg, var(--warning), var(--danger)); }
@@ -1309,6 +1365,21 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
 .add-form input { flex: 1; min-width: 140px; }
 .add-form .btn { flex-shrink: 0; }
 
+.upload-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.upload-box .upload-title { font-size: 14px; font-weight: 600; }
+.upload-box .upload-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.upload-box input[type="file"] { display: none; }
+
 /* 配置管理页 */
 .config-layout {
   display: flex;
@@ -1326,7 +1397,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   height: fit-content;
   position: sticky;
   top: 80px;
-  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.10);
 }
 .config-sidebar .cat-item {
   padding: 10px 14px;
@@ -1379,7 +1450,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   border-radius: 50%;
   transition: 0.3s;
 }
-.toggle input:checked + .slider { background: var(--accent); }
+.toggle input:checked + .slider { background: var(--secondary); }
 .toggle input:checked + .slider::before { transform: translateX(20px); }
 /* multiselect checkbox 组 */
 .checks { display: flex; gap: 16px; flex-wrap: wrap; padding-top: 4px; }
@@ -1403,7 +1474,7 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   align-items: center;
   justify-content: flex-end;
   margin-top: 20px;
-  box-shadow: 0 -4px 6px -1px rgba(0,0,0,0.2);
+  box-shadow: 0 -2px 10px rgba(0,0,0,0.12);
   border-top: 1px solid var(--border);
 }
 .dirty-hint { color: var(--warning); font-size: 13px; margin-right: auto; }
@@ -1576,6 +1647,7 @@ function escapeHtml(s) {
   return String(s||"").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 function escapeAttr(s) { return String(s||"").replace(/'/g, "\\'"); }
+function validBackupName(name) { return /^pal_backup_[A-Za-z0-9_.-]+\.tar\.gz$/.test(name); }
 
 async function action(path, msg) {
   try {
@@ -1877,6 +1949,14 @@ async function showSaves() {
           <h2>💾 存档备份</h2>
           <button class="btn btn-save" onclick="doBackup()"><span class="btn-icon">💾</span>立即备份</button>
         </div>
+        <div class="upload-box">
+          <div>
+            <div class="upload-title">上传备份</div>
+            <div class="upload-sub">支持 pal_backup_*.tar.gz，上传后会出现在下方列表</div>
+          </div>
+          <label class="btn btn-upload" for="saveUpload"><span class="btn-icon">⬆</span>选择文件</label>
+          <input type="file" id="saveUpload" accept=".tar.gz,application/gzip,application/x-gzip" onchange="uploadSave(this)">
+        </div>
         <div id="savesList">加载中...</div>
       </div>
     </div>`;
@@ -1904,6 +1984,7 @@ async function refreshSaves() {
             <div class="item-sub">${dateStr} · ${sizeMb} MB</div>
           </div>
           <div class="item-actions">
+            <button class="btn btn-download" onclick="downloadSave('${escapeAttr(s.name)}')">下载</button>
             <button class="btn btn-restart" onclick="doRestore('${escapeAttr(s.name)}')">恢复</button>
             <button class="btn btn-ban" onclick="doDelete('${escapeAttr(s.name)}')">删除</button>
           </div>
@@ -1923,6 +2004,45 @@ async function doBackup() {
     toast(d.message, d.ok);
     if (d.ok) refreshSaves();
   } catch (e) { toast(e.message, false); }
+}
+
+function downloadSave(name) {
+  window.location.href = "/api/saves/download?name=" + encodeURIComponent(name);
+}
+
+function uploadSave(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  if (!validBackupName(file.name)) {
+    toast("文件名必须是 pal_backup_*.tar.gz", false);
+    input.value = "";
+    return;
+  }
+  if (file.size > 500 * 1024 * 1024) {
+    toast("文件过大（>500MB）", false);
+    input.value = "";
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const result = String(reader.result || "");
+    const content = result.includes(",") ? result.split(",")[1] : result;
+    try {
+      toast("正在上传备份...", true);
+      const d = await api("/api/saves/upload", { method: "POST", body: { name: file.name, content } });
+      toast(d.message, d.ok);
+      if (d.ok) refreshSaves();
+    } catch (e) {
+      toast(e.message, false);
+    } finally {
+      input.value = "";
+    }
+  };
+  reader.onerror = () => {
+    toast("读取文件失败", false);
+    input.value = "";
+  };
+  reader.readAsDataURL(file);
 }
 
 async function doRestore(name) {
