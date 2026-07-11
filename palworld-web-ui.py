@@ -26,6 +26,7 @@ BIND = os.environ.get("WEB_BIND", "0.0.0.0")
 PORT = int(os.environ.get("WEB_PORT", "8080"))
 PAL_SETTINGS = "/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
 STEAM_USER = "steam"
+REST_API_PORT = int(os.environ.get("REST_API_PORT", "8212"))
 
 # ===== 常量 =====
 SESSION_TTL = 7200
@@ -166,6 +167,32 @@ def get_memory():
 
 
 def get_players():
+    """优先用 REST API /v1/api/players（数据丰富），RCON ShowPlayers 作为 fallback。
+    Palworld v1.0 的 RCON ShowPlayers 有 bug（有玩家在线时不返回响应），必须用 REST API。
+    """
+    try:
+        import urllib.request, base64
+        url = f"http://127.0.0.1:{REST_API_PORT}/v1/api/players"
+        req = urllib.request.Request(url)
+        auth = base64.b64encode(f"admin:{RCON_PASS}".encode()).decode()
+        req.add_header("Authorization", f"Basic {auth}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        players = []
+        for p in data.get("players", []):
+            players.append({
+                "name": p.get("name", ""),
+                "playeruid": p.get("playerId", ""),
+                "steamid": p.get("userId", "").replace("steam_", ""),
+                "ping": round(p.get("ping", 0), 1),
+                "level": p.get("level", 0),
+                "ip": p.get("iP", ""),
+            })
+        return players
+    except Exception:
+        pass
+
+    # fallback: RCON ShowPlayers（无玩家时可能可用）
     rc, out, _ = rcon("ShowPlayers")
     if rc != 0 or not out:
         return []
@@ -175,7 +202,6 @@ def get_players():
         if not line:
             continue
         parts = [p.strip() for p in line.split(",")]
-        # 跳过 CSV 标题行 (name,playeruid,steamid)
         if parts[0].lower() == "name":
             continue
         if len(parts) >= 3:
@@ -874,6 +900,12 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   flex-shrink: 0;
 }
 .player-row .player-name { flex: 1; font-weight: 600; }
+.player-row .player-meta { display: flex; gap: 6px; }
+.player-row .player-tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: var(--card-hover); color: var(--text-muted);
+  white-space: nowrap;
+}
 .player-row .player-steamid {
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 12px; color: var(--text-muted);
@@ -1132,6 +1164,10 @@ async function refreshPlayers() {
       <div class="player-row">
         <div class="player-dot"></div>
         <div class="player-name">${escapeHtml(p.name)}</div>
+        <div class="player-meta">
+          ${p.level != null ? `<span class="player-tag">Lv.${p.level}</span>` : ''}
+          ${p.ping != null ? `<span class="player-tag">${p.ping}ms</span>` : ''}
+        </div>
         <div class="player-steamid">${escapeHtml(p.steamid)}</div>
         <div class="player-actions">
           <button class="btn btn-kick" onclick="kick('${escapeAttr(p.steamid)}')">踢出</button>

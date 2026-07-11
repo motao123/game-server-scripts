@@ -102,10 +102,13 @@ install_web_app() {
     chmod 755 "$WEB_APP_DEST"
     chown root:root "$WEB_APP_DEST"
 
-    # 从 PalWorldSettings.ini 读取 RCON 端口和管理员密码
-    local rcon_port rcon_pass
+    # 从 PalWorldSettings.ini 读取 RCON 端口、管理员密码、REST API 端口
+    local rcon_port rcon_pass rest_api_port
     rcon_port=$(read_pal_setting "RCONPort")
     rcon_pass=$(read_pal_setting "AdminPassword")
+    rest_api_port=$(read_pal_setting "RESTAPIPort")
+    # REST API 端口读取失败时用默认值
+    rest_api_port="${rest_api_port:-8212}"
 
     if [[ -z "$rcon_port" ]] || [[ -z "$rcon_pass" ]]; then
         error "无法从 PalWorldSettings.ini 读取 RCONPort 或 AdminPassword"
@@ -115,6 +118,7 @@ install_web_app() {
 
     info "RCON 端口: ${rcon_port}"
     info "RCON 密码: 已从配置读取"
+    info "REST API 端口: ${rest_api_port}（用于获取玩家列表，RCON ShowPlayers 在 v1.0 有 bug）"
 
     # 写环境变量文件（systemd EnvironmentFile，单引号包裹避免特殊字符问题）
     cat > "$WEB_ENV_FILE" <<EOF
@@ -125,6 +129,7 @@ RCON_PASS='${rcon_pass}'
 SERVICE=pal-server
 WEB_BIND=${WEB_BIND}
 WEB_PORT=${WEB_PORT}
+REST_API_PORT=${rest_api_port}
 EOF
     chmod 600 "$WEB_ENV_FILE"
     chown root:root "$WEB_ENV_FILE"
