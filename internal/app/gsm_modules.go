@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type GameTemplate struct {
@@ -238,17 +239,23 @@ func (s *Server) handleEnvironmentInstall(w http.ResponseWriter, r *http.Request
 		Package string `json:"package"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	commands := map[string]string{
-		"java":     "apt-get update && apt-get install -y openjdk-17-jre-headless",
-		"steamcmd": "apt-get update && apt-get install -y steamcmd",
-		"tools":    "apt-get update && apt-get install -y curl wget tar gzip unzip",
-	}
-	cmd, ok := commands[body.Package]
-	if !ok {
-		writeError(w, http.StatusBadRequest, "不支持的环境包")
+	id := time.Now().Format("20060102150405") + "-" + body.Package
+	task, err := s.installs.Start(body.Package, id)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "message": "请在服务器确认后执行", "command": cmd})
+	writeJSON(w, map[string]any{"ok": true, "taskId": task.ID, "message": "安装任务已启动"})
+}
+
+func (s *Server) handleEnvironmentInstallStatus(w http.ResponseWriter, r *http.Request) {
+	taskID := r.URL.Query().Get("taskId")
+	task := s.installs.Get(taskID)
+	if task == nil {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	writeJSON(w, task)
 }
 func lookPath(name string) string                                           { p, _ := exec.LookPath(name); return p }
 func (s *Server) handleBackupList(w http.ResponseWriter, r *http.Request)   { s.handleSaves(w, r) }

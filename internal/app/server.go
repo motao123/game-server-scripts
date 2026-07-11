@@ -28,6 +28,7 @@ type Server struct {
 	tasks     *TaskStore
 	terminal  *terminal.Manager
 	scheduler *Scheduler
+	installs  *InstallManager
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -40,6 +41,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 		terminal:  terminal.NewManager(),
 	}
 	s.scheduler = NewScheduler(s)
+	s.installs = NewInstallManager()
 	return s, nil
 }
 
@@ -131,6 +133,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/scheduled-tasks/delete", s.requirePost(s.handleTaskDelete))
 	mux.HandleFunc("/api/environment/info", s.require(s.handleEnvironment))
 	mux.HandleFunc("/api/environment/install", s.requirePost(s.handleEnvironmentInstall))
+	mux.HandleFunc("/api/environment/install/status", s.require(s.handleEnvironmentInstallStatus))
 	mux.HandleFunc("/api/plugins", s.require(s.handlePlugins))
 	mux.HandleFunc("/api/plugins/toggle", s.requirePost(s.handlePluginToggle))
 	mux.HandleFunc("/api/settings", s.require(s.handleSettings))
