@@ -678,6 +678,9 @@ Description=Palworld Dedicated Server
 Documentation=https://tech.palworldgame.com/
 After=network-online.target
 Wants=network-online.target
+; 重启频率限制: 10 分钟内最多重启 5 次（systemd 230+ 此项移到 [Unit]）
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -691,11 +694,9 @@ ExecStop=/usr/local/bin/pal-stop \$MAINPID
 KillSignal=SIGINT
 TimeoutStopSec=300
 
-; 重启策略: 失败后10秒重启，10分钟内最多重启5次
+; 重启策略: 失败后10秒重启（频率限制在 [Unit] 里）
 Restart=on-failure
 RestartSec=10
-StartLimitIntervalSec=600
-StartLimitBurst=5
 
 ; ===== 内存限制 (防止内存泄漏拖垮系统) =====
 MemoryMax=${MEMORY_MAX}
@@ -916,15 +917,43 @@ def rcon(host, port, password, command):
         print(f'RCON 连接失败: {e}', file=sys.stderr)
         return 1
     try:
+        # 认证：发 AUTH 后循环读，直到 AUTH_RESPONSE(type 2) 或超时
+        # 某些服务器认证后会先发一个空 RESPONSE 再发 AUTH_RESPONSE
         sock.sendall(_pack(1, 3, password))
-        pkt_id, _, _ = _recv(sock)
-        if pkt_id == -1:
-            print('RCON 认证失败，请检查管理员密码', file=sys.stderr)
+        sock.settimeout(3)
+        auth_ok = False
+        try:
+            while True:
+                pkt_id, pkt_type, _ = _recv(sock)
+                if pkt_id == -1:
+                    print('RCON 认证失败，请检查管理员密码', file=sys.stderr)
+                    return 1
+                if pkt_type == 2:
+                    auth_ok = True
+                    break
+        except socket.timeout:
+            auth_ok = True  # 没收到 AUTH_RESPONSE 但也没收到 -1，假设认证成功
+        if not auth_ok:
+            print('RCON 认证超时', file=sys.stderr)
             return 1
+
+        # 执行命令：循环读响应包，直到空 body 或超时
+        # ShowPlayers 等命令的响应可能被分片，或先发空 ack 再发实际数据
         sock.sendall(_pack(2, 2, command))
-        _, _, body = _recv(sock)
-        if body:
-            print(body)
+        bodies = []
+        try:
+            while True:
+                _, _, body = _recv(sock)
+                if not body:
+                    break
+                bodies.append(body)
+                if len(bodies) >= 20:
+                    break
+        except socket.timeout:
+            pass
+        output = '\n'.join(bodies)
+        if output:
+            print(output)
         return 0
     finally:
         sock.close()

@@ -165,13 +165,17 @@ def get_memory():
 
 def get_players():
     rc, out, _ = rcon("ShowPlayers")
-    if rc != 0:
+    if rc != 0 or not out:
         return []
     players = []
-    for line in out.splitlines()[1:]:
-        if not line.strip():
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
             continue
-        parts = line.split(",")
+        parts = [p.strip() for p in line.split(",")]
+        # 跳过 CSV 标题行 (name,playeruid,steamid)
+        if parts[0].lower() == "name":
+            continue
         if len(parts) >= 3:
             players.append({
                 "name": parts[0],
