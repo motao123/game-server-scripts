@@ -931,27 +931,27 @@ def rcon(host, port, password, command):
                 if pkt_type == 2:
                     auth_ok = True
                     break
+                sock.settimeout(0.5)  # 后续包短超时，快速结束
         except socket.timeout:
             auth_ok = True  # 没收到 AUTH_RESPONSE 但也没收到 -1，假设认证成功
         if not auth_ok:
             print('RCON 认证超时', file=sys.stderr)
             return 1
 
-        # 执行命令：循环读响应包，直到空 body 或超时
+        # 执行命令：循环读所有响应包，用超时结束
+        # 关键：不在空 body 时 break——服务器可能先发空 ack 再发实际数据
         # ShowPlayers 等命令的响应可能被分片，或先发空 ack 再发实际数据
         sock.sendall(_pack(2, 2, command))
         bodies = []
+        sock.settimeout(3)  # 第一个包用较长超时等响应
         try:
-            while True:
+            while len(bodies) < 20:
                 _, _, body = _recv(sock)
-                if not body:
-                    break
                 bodies.append(body)
-                if len(bodies) >= 20:
-                    break
+                sock.settimeout(0.5)  # 后续包短超时，无新数据快速结束
         except socket.timeout:
             pass
-        output = '\n'.join(bodies)
+        output = '\n'.join(b for b in bodies if b)
         if output:
             print(output)
         return 0
