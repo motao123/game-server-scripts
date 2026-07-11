@@ -575,6 +575,48 @@ sudo usermod -aG steam <你的用户>   # 重新登录生效
 3. 检查系统防火墙：`sudo ufw status` 或 `sudo iptables -L -n`
 4. **最常见原因**：云安全组没有放行对应端口，请在云控制台检查
 
+### 提示「比赛正在运行不兼容的游戏版本」
+
+客户端和服务器版本不一致。最常见场景：游戏发布了新版本，Steam 客户端自动更新了，但服务器还跑着旧版本。
+
+**1. 更新服务器**
+
+```bash
+pal-manager update
+```
+
+调 SteamCMD 把服务器更新到最新正式版（AppID 2394010），更新完自动重启。
+
+**2. 确认客户端也是最新版**
+
+Steam 库右键 Palworld -> 属性 -> 更新，或重启 Steam 让客户端检查更新。
+
+**3. 更新后仍不行，查看服务器实际版本**
+
+```bash
+journalctl -u pal-server -n 50 | grep -i version
+```
+
+对比官方最新版本号（SteamDB 或 Palworld 官方公告）。
+
+**4. 可能是 beta 分支残留**
+
+脚本默认走正式版，但若服务器是早期手动装的，可能残留 beta 配置。强制切回正式版：
+
+```bash
+sudo -u steam steamcmd +login anonymous \
+    +force_install_dir /home/steam/Steam/steamapps/common/PalServer \
+    +app_update 2394010 -beta public validate +quit
+```
+
+**5. 文件清单错乱时删 appmanifest 重下**
+
+```bash
+pal-manager stop
+sudo rm /home/steam/Steam/steamapps/common/PalServer/steamapps/appmanifest_2394010.acf
+pal-manager update
+```
+
 ### 服务器启动失败
 
 ```bash
