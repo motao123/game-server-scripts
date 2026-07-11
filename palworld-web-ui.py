@@ -27,6 +27,11 @@ PORT = int(os.environ.get("WEB_PORT", "8080"))
 PAL_SETTINGS = "/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
 STEAM_USER = "steam"
 REST_API_PORT = int(os.environ.get("REST_API_PORT", "8212"))
+PAL_SERVER_DIR = "/home/steam/Steam/steamapps/common/PalServer"
+SAVE_GAMES_DIR = f"{PAL_SERVER_DIR}/Pal/Saved/SaveGames"
+BANLIST_FILE = f"{SAVE_GAMES_DIR}/banlist.txt"
+BACKUP_DIR = f"/home/{STEAM_USER}/pal-backups"
+WHITELIST_FILE = "/etc/pal-whitelist.json"
 
 # ===== 常量 =====
 SESSION_TTL = 7200
@@ -416,6 +421,271 @@ def validate_and_format(body):
     return formatted, None
 
 
+# ===== 存档管理 =====
+def get_saves():
+    """列出所有备份，返回 [{name, size, time}]，最新在前"""
+    import glob
+    files = glob.glob(os.path.join(BACKUP_DIR, "pal_backup_*.tar.gz"))
+    saves = []
+    for f in files:
+        try:
+            stat = os.stat(f)
+        except OSError:
+            continue
+        saves.append({
+            "name": os.path.basename(f),
+            "size": stat.st_size,
+            "time": int(stat.st_mtime),
+        })
+    saves.sort(key=lambda s: s["time"], reverse=True)
+    return saves
+
+
+def backup_save():
+    """调 pal-backup 脚本立即备份"""
+    import subprocess
+    try:
+        r = subprocess.run(["/usr/local/bin/pal-backup"], capture_output=True, text=True, timeout=180)
+        return r.returncode == 0, r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        return False, "备份超时"
+    except Exception as e:
+        return False, str(e)
+
+
+def restore_save(name):
+    """恢复备份：RCON Save -> 停服 -> 解压覆盖 SaveGames -> chown -> 启服"""
+    import subprocess, tempfile
+    if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+        return False, "无效的备份文件名"
+    backup_file = os.path.join(BACKUP_DIR, name)
+    if not os.path.isfile(backup_file):
+        return False, "备份文件不存在"
+
+    rcon("Save")
+    time.sleep(3)
+    subprocess.run(["systemctl", "stop", SERVICE], capture_output=True, timeout=30)
+    time.sleep(2)
+
+    tmpdir = tempfile.mkdtemp(prefix="pal_restore_")
+    try:
+        r = subprocess.run(["tar", "-xzf", backup_file, "-C", tmpdir],
+                           capture_output=True, timeout=180)
+        if r.returncode != 0:
+            return False, f"解压失败: {r.stderr.decode()}"
+        src = os.path.join(tmpdir, "SaveGames")
+        if not os.path.isdir(src):
+            return False, "备份包内无 SaveGames 目录"
+        # 清空现有 SaveGames（保留 banlist.txt）
+        for item in os.listdir(SAVE_GAMES_DIR):
+            if item == "banlist.txt":
+                continue
+            item_path = os.path.join(SAVE_GAMES_DIR, item)
+            if os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+            else:
+                os.remove(item_path)
+        # 复制备份内容
+        for item in os.listdir(src):
+            s = os.path.join(src, item)
+            d = os.path.join(SAVE_GAMES_DIR, item)
+            if os.path.isdir(s):
+                shutil.copytree(s, d)
+            else:
+                shutil.copy2(s, d)
+        # chown 回 steam
+        import pwd, grp
+        uid = pwd.getpwnam(STEAM_USER).pw_uid
+        gid = grp.getgrnam(STEAM_USER).gr_gid
+        for root, dirs, files in os.walk(SAVE_GAMES_DIR):
+            os.chown(root, uid, gid)
+            for fn in files:
+                try:
+                    os.chown(os.path.join(root, fn), uid, gid)
+                except OSError:
+                    pass
+        return True, "恢复完成，服务器正在重启"
+    except Exception as e:
+        return False, f"恢复失败: {e}"
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        subprocess.run(["systemctl", "start", SERVICE], capture_output=True, timeout=30)
+
+
+def delete_save(name):
+    """删除备份文件"""
+    if "/" in name or ".." in name or not name.endswith(".tar.gz"):
+        return False, "无效的备份文件名"
+    backup_file = os.path.join(BACKUP_DIR, name)
+    if not os.path.isfile(backup_file):
+        return False, "备份文件不存在"
+    os.remove(backup_file)
+    return True, "已删除"
+
+
+# ===== 白名单 =====
+def get_whitelist():
+    """读白名单 JSON"""
+    if not os.path.isfile(WHITELIST_FILE):
+        return []
+    try:
+        with open(WHITELIST_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, IOError):
+        return []
+
+
+def _write_whitelist(data):
+    with open(WHITELIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def add_whitelist(name, steamid, playeruid):
+    """添加白名单条目，空字段=通配符"""
+    wl = get_whitelist()
+    entry = {"name": (name or "").strip(), "steamid": (steamid or "").strip(),
+             "playeruid": (playeruid or "").strip()}
+    if entry["steamid"]:
+        wl = [w for w in wl if w.get("steamid") != entry["steamid"]]
+    wl.append(entry)
+    _write_whitelist(wl)
+    return True, "已添加"
+
+
+def remove_whitelist(steamid):
+    """按 steamid 移除白名单条目"""
+    wl = get_whitelist()
+    new_wl = [w for w in wl if w.get("steamid") != steamid]
+    _write_whitelist(new_wl)
+    return True, f"已移除 {len(wl) - len(new_wl)} 条"
+
+
+def check_whitelist():
+    """检查在线玩家，踢出不在白名单的。白名单为空=不启用"""
+    wl = get_whitelist()
+    if not wl:
+        return True, "白名单为空，未启用"
+    players = get_players()
+    kicked = []
+    for p in players:
+        sid = p.get("steamid", "")
+        if not sid:
+            continue
+        matched = False
+        for w in wl:
+            w_sid = w.get("steamid", "")
+            if w_sid and w_sid != sid:
+                continue
+            matched = True
+            break
+        if not matched:
+            rc, _, _ = rcon(f"KickPlayer {sid}")
+            if rc == 0:
+                kicked.append(p.get("name", sid))
+    return True, f"已踢出 {len(kicked)} 人" + (f": {', '.join(kicked)}" if kicked else "")
+
+
+# ===== 封禁列表 =====
+def get_banlist():
+    """读 banlist.txt，返回 [{steamid}]"""
+    if not os.path.isfile(BANLIST_FILE):
+        return []
+    try:
+        with open(BANLIST_FILE, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except IOError:
+        return []
+    result = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        sid = line.replace("steam_", "", 1)
+        result.append({"steamid": sid})
+    return result
+
+
+def unban(steamid):
+    """解封：精确匹配 steam_<steamid> 整行移除"""
+    if not os.path.isfile(BANLIST_FILE):
+        return False, "banlist 文件不存在"
+    with open(BANLIST_FILE, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    target = f"steam_{steamid}"
+    new_lines = [l for l in lines if l.strip() != target]
+    with open(BANLIST_FILE, "w", encoding="utf-8") as f:
+        if new_lines:
+            f.write("\n".join(new_lines) + "\n")
+    try:
+        import pwd, grp
+        uid = pwd.getpwnam(STEAM_USER).pw_uid
+        gid = grp.getgrnam(STEAM_USER).gr_gid
+        os.chown(BANLIST_FILE, uid, gid)
+    except Exception:
+        pass
+    return True, f"已解封 {steamid}"
+
+
+# ===== 系统信息 =====
+def get_sysinfo():
+    """纯 stdlib 读 /proc 获取系统信息"""
+    result = {}
+    # CPU 使用率（两次采样差值）
+    def _read_cpu():
+        with open("/proc/stat", "r") as f:
+            line = f.readline()
+        nums = [int(x) for x in line.split()[1:]]
+        idle = nums[3] + nums[4] if len(nums) > 4 else nums[3]
+        total = sum(nums)
+        return total, idle
+    try:
+        t1, i1 = _read_cpu()
+        time.sleep(0.1)
+        t2, i2 = _read_cpu()
+        dt = t2 - t1
+        di = i2 - i1
+        result["cpu_percent"] = round((1 - di / dt) * 100, 1) if dt > 0 else 0
+    except Exception:
+        result["cpu_percent"] = 0
+
+    # 内存
+    try:
+        with open("/proc/meminfo", "r") as f:
+            mi = {}
+            for line in f:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    mi[k.strip()] = int(v.strip().split()[0]) * 1024
+        total = mi.get("MemTotal", 0)
+        avail = mi.get("MemAvailable", 0)
+        result["memory"] = {
+            "total": total, "available": avail, "used": total - avail,
+            "percent": round((total - avail) / total * 100, 1) if total > 0 else 0,
+        }
+    except Exception:
+        result["memory"] = {"total": 0, "available": 0, "used": 0, "percent": 0}
+
+    # 磁盘（PalServer 所在分区）
+    try:
+        du = shutil.disk_usage(PAL_SERVER_DIR)
+        result["disk"] = {
+            "total": du.total, "used": du.used, "free": du.free,
+            "percent": round(du.used / du.total * 100, 1) if du.total > 0 else 0,
+        }
+    except Exception:
+        result["disk"] = {"total": 0, "used": 0, "free": 0, "percent": 0}
+
+    # 系统运行时长
+    try:
+        with open("/proc/uptime", "r") as f:
+            result["uptime"] = int(float(f.read().split()[0]))
+    except Exception:
+        result["uptime"] = 0
+
+    return result
+
+
 # ===== Session / Auth =====
 def create_session(ip):
     token = secrets.token_urlsafe(32)
@@ -554,6 +824,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.require_auth():
                 return
             self.send_json(get_config())
+        elif self.path == "/api/sysinfo":
+            if not self.require_auth():
+                return
+            self.send_json(get_sysinfo())
+        elif self.path == "/api/saves":
+            if not self.require_auth():
+                return
+            self.send_json({"saves": get_saves()})
+        elif self.path == "/api/whitelist":
+            if not self.require_auth():
+                return
+            self.send_json({"whitelist": get_whitelist()})
+        elif self.path == "/api/banlist":
+            if not self.require_auth():
+                return
+            self.send_json({"banlist": get_banlist()})
         else:
             self.send_json({"error": "not found"}, 404)
 
@@ -616,6 +902,43 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/config/restart":
             rc, _, err = systemctl("restart")
             self.send_json({"ok": rc == 0, "error": err})
+        elif self.path == "/api/saves/backup":
+            ok, msg = backup_save()
+            self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/saves/restore":
+            name = body.get("name", "").strip()
+            if not name:
+                self.send_json({"error": "name 不能为空"}, 400)
+                return
+            ok, msg = restore_save(name)
+            self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/saves/delete":
+            name = body.get("name", "").strip()
+            if not name:
+                self.send_json({"error": "name 不能为空"}, 400)
+                return
+            ok, msg = delete_save(name)
+            self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/whitelist/add":
+            ok, msg = add_whitelist(body.get("name", ""), body.get("steamid", ""), body.get("playeruid", ""))
+            self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/whitelist/remove":
+            sid = body.get("steamid", "").strip()
+            if not sid:
+                self.send_json({"error": "steamid 不能为空"}, 400)
+                return
+            ok, msg = remove_whitelist(sid)
+            self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/whitelist/check":
+            ok, msg = check_whitelist()
+            self.send_json({"ok": ok, "message": msg})
+        elif self.path == "/api/banlist/unban":
+            sid = body.get("steamid", "").strip()
+            if not sid:
+                self.send_json({"error": "steamid 不能为空"}, 400)
+                return
+            ok, msg = unban(sid)
+            self.send_json({"ok": ok, "message": msg})
         else:
             self.send_json({"error": "not found"}, 404)
 
@@ -934,6 +1257,58 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
   padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600;
 }
 
+/* 系统信息卡片 */
+.sys-card {
+  background: var(--card);
+  padding: 16px;
+  border-radius: 10px;
+  border-left: 4px solid var(--accent);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+.sys-card .sys-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+.sys-card .sys-value { font-size: 22px; font-weight: 700; margin-bottom: 6px; }
+.sys-card .sys-bar {
+  height: 5px; background: var(--bg); border-radius: 3px; overflow: hidden;
+}
+.sys-card .sys-bar-fill {
+  height: 100%; background: linear-gradient(90deg, var(--accent), var(--primary));
+  border-radius: 3px; transition: width 0.6s ease;
+}
+.sys-card .sys-bar-fill.high { background: linear-gradient(90deg, var(--warning), var(--danger)); }
+.sys-card .sys-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+
+/* 通用行样式（存档/白名单/封禁） */
+.item-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px; border-radius: 8px;
+  background: var(--bg); margin-bottom: 8px;
+}
+.item-row:last-child { margin-bottom: 0; }
+.item-row .item-main { flex: 1; min-width: 0; }
+.item-row .item-title { font-weight: 600; font-size: 14px; }
+.item-row .item-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.item-row .item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.item-row .item-tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: var(--card-hover); color: var(--text-muted); white-space: nowrap;
+}
+
+.empty-state {
+  text-align: center; color: var(--text-muted);
+  padding: 28px; font-size: 14px;
+}
+
+.add-form {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.add-form input { flex: 1; min-width: 140px; }
+.add-form .btn { flex-shrink: 0; }
+
 /* 配置管理页 */
 .config-layout {
   display: flex;
@@ -1230,7 +1605,9 @@ function showDashboard() {
       <h1>🎮 Palworld <span>管理面板</span></h1>
       <div class="tabs">
         <button class="tab active" onclick="showDashboard()">📊 仪表盘</button>
+        <button class="tab" onclick="showPlayers()">👥 玩家管理</button>
         <button class="tab" onclick="showConfig()">⚙️ 配置管理</button>
+        <button class="tab" onclick="showSaves()">💾 存档管理</button>
       </div>
       <button class="btn btn-logout" onclick="logout()">退出</button>
     </div>
@@ -1240,6 +1617,25 @@ function showDashboard() {
         <div class="status-text">
           <div class="title" id="statusTitle">加载中...</div>
           <div class="sub" id="statusSub">-</div>
+        </div>
+      </div>
+      <div class="cards">
+        <div class="sys-card">
+          <div class="sys-head"><span>⚡</span>CPU</div>
+          <div class="sys-value" id="cpuPercent">-</div>
+          <div class="sys-bar"><div class="sys-bar-fill" id="cpuBar" style="width:0%"></div></div>
+          <div class="sys-sub" id="cpuSub">系统 CPU 使用率</div>
+        </div>
+        <div class="sys-card">
+          <div class="sys-head"><span>💿</span>磁盘</div>
+          <div class="sys-value" id="diskPercent">-</div>
+          <div class="sys-bar"><div class="sys-bar-fill" id="diskBar" style="width:0%"></div></div>
+          <div class="sys-sub" id="diskSub">-</div>
+        </div>
+        <div class="sys-card">
+          <div class="sys-head"><span>⏱️</span>系统运行</div>
+          <div class="sys-value" id="sysUptime">-</div>
+          <div class="sys-sub">服务器开机时长</div>
         </div>
       </div>
       <div class="cards">
@@ -1273,13 +1669,6 @@ function showDashboard() {
       </div>
       <div class="panel">
         <div class="panel-header">
-          <h2>👥 在线玩家</h2>
-          <span class="count-badge" id="playerCount">0</span>
-        </div>
-        <div id="playersList"></div>
-      </div>
-      <div class="panel">
-        <div class="panel-header">
           <h2>📜 最近日志</h2>
           <span class="panel-sub">30 秒自动刷新</span>
         </div>
@@ -1288,10 +1677,37 @@ function showDashboard() {
     </div>`;
 
   refreshStatus();
-  refreshPlayers();
+  refreshSysinfo();
   refreshLogs();
   if (timer) clearInterval(timer);
-  timer = setInterval(() => { refreshStatus(); refreshPlayers(); refreshLogs(); }, 30000);
+  timer = setInterval(() => { refreshStatus(); refreshSysinfo(); refreshLogs(); }, 30000);
+}
+
+async function refreshSysinfo() {
+  try {
+    const s = await api("/api/sysinfo");
+    const cpu = s.cpu_percent || 0;
+    document.getElementById("cpuPercent").textContent = cpu.toFixed(1) + "%";
+    const cpuBar = document.getElementById("cpuBar");
+    cpuBar.style.width = cpu + "%";
+    cpuBar.classList.toggle("high", cpu > 80);
+
+    const disk = s.disk || {};
+    const dp = disk.percent || 0;
+    document.getElementById("diskPercent").textContent = dp.toFixed(1) + "%";
+    const diskBar = document.getElementById("diskBar");
+    diskBar.style.width = dp + "%";
+    diskBar.classList.toggle("high", dp > 90);
+    document.getElementById("diskSub").textContent =
+      ((disk.used||0)/1073741824).toFixed(1) + " / " + ((disk.total||0)/1073741824).toFixed(1) + " GB";
+
+    const up = s.uptime || 0;
+    const days = Math.floor(up / 86400);
+    const hours = Math.floor((up % 86400) / 3600);
+    const mins = Math.floor((up % 3600) / 60);
+    document.getElementById("sysUptime").textContent =
+      days > 0 ? `${days}天${hours}时` : `${hours}时${mins}分`;
+  } catch (e) { /* 忽略 */ }
 }
 
 async function broadcast() {
@@ -1304,14 +1720,239 @@ async function broadcast() {
   } catch (e) { toast(e.message, false); }
 }
 
+async function showPlayers() {
+  if (timer) clearInterval(timer);
+  document.getElementById("app").innerHTML = `
+    <div class="topbar">
+      <h1>🎮 Palworld <span>玩家管理</span></h1>
+      <div class="tabs">
+        <button class="tab" onclick="showDashboard()">📊 仪表盘</button>
+        <button class="tab active" onclick="showPlayers()">👥 玩家管理</button>
+        <button class="tab" onclick="showConfig()">⚙️ 配置管理</button>
+        <button class="tab" onclick="showSaves()">💾 存档管理</button>
+      </div>
+      <button class="btn btn-logout" onclick="logout()">退出</button>
+    </div>
+    <div class="container">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>👥 在线玩家</h2>
+          <span class="count-badge" id="playerCount">0</span>
+        </div>
+        <div id="playersList"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>📝 白名单</h2>
+          <span class="panel-sub">空字段=通配符 · 白名单为空=不启用</span>
+        </div>
+        <div class="add-form">
+          <input type="text" id="wlName" placeholder="玩家名（可空）">
+          <input type="text" id="wlSteamid" placeholder="SteamID（可空）">
+          <input type="text" id="wlPlayeruid" placeholder="PlayerUID（可空）">
+          <button class="btn btn-save" onclick="addWhitelist()"><span class="btn-icon">+</span>添加</button>
+          <button class="btn btn-restart" onclick="checkWhitelist()">立即检查</button>
+        </div>
+        <div id="whitelistList"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h2>🚫 封禁列表</h2></div>
+        <div id="banlistList"></div>
+      </div>
+    </div>`;
+
+  refreshPlayers();
+  refreshWhitelist();
+  refreshBanlist();
+  if (timer) clearInterval(timer);
+  timer = setInterval(() => { refreshPlayers(); }, 30000);
+}
+
+async function refreshWhitelist() {
+  try {
+    const d = await api("/api/whitelist");
+    const wl = d.whitelist || [];
+    if (wl.length === 0) {
+      document.getElementById("whitelistList").innerHTML =
+        '<div class="empty-state">白名单为空（未启用）</div>';
+      return;
+    }
+    const html = wl.map(w => `
+      <div class="item-row">
+        <div class="item-main">
+          <div class="item-title">${escapeHtml(w.name || '(任意名称)')}</div>
+          <div class="item-sub">SteamID: ${escapeHtml(w.steamid || '(任意)')} · PlayerUID: ${escapeHtml(w.playeruid || '(任意)')}</div>
+        </div>
+        <div class="item-actions">
+          ${w.steamid ? `<button class="btn btn-ban" onclick="removeWhitelist('${escapeAttr(w.steamid)}')">移除</button>` : ''}
+        </div>
+      </div>`).join("");
+    document.getElementById("whitelistList").innerHTML = html;
+  } catch (e) { /* 忽略 */ }
+}
+
+async function addWhitelist() {
+  const name = document.getElementById("wlName").value.trim();
+  const steamid = document.getElementById("wlSteamid").value.trim();
+  const playeruid = document.getElementById("wlPlayeruid").value.trim();
+  if (!name && !steamid && !playeruid) {
+    toast("至少填一个字段", false);
+    return;
+  }
+  try {
+    const d = await api("/api/whitelist/add", { method: "POST", body: { name, steamid, playeruid } });
+    toast(d.message, true);
+    document.getElementById("wlName").value = "";
+    document.getElementById("wlSteamid").value = "";
+    document.getElementById("wlPlayeruid").value = "";
+    refreshWhitelist();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function removeWhitelist(steamid) {
+  if (!confirm("移除白名单条目 " + steamid + " ?")) return;
+  try {
+    const d = await api("/api/whitelist/remove", { method: "POST", body: { steamid } });
+    toast(d.message, true);
+    refreshWhitelist();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function checkWhitelist() {
+  try {
+    const d = await api("/api/whitelist/check", { method: "POST", body: {} });
+    toast(d.message, true);
+    refreshPlayers();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function refreshBanlist() {
+  try {
+    const d = await api("/api/banlist");
+    const bl = d.banlist || [];
+    if (bl.length === 0) {
+      document.getElementById("banlistList").innerHTML =
+        '<div class="empty-state">无封禁玩家</div>';
+      return;
+    }
+    const html = bl.map(b => `
+      <div class="item-row">
+        <div class="item-main">
+          <div class="item-title">${escapeHtml(b.steamid)}</div>
+          <div class="item-sub">SteamID</div>
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-save" onclick="doUnban('${escapeAttr(b.steamid)}')">解封</button>
+        </div>
+      </div>`).join("");
+    document.getElementById("banlistList").innerHTML = html;
+  } catch (e) { /* 忽略 */ }
+}
+
+async function doUnban(steamid) {
+  if (!confirm("解封玩家 " + steamid + " ?")) return;
+  try {
+    const d = await api("/api/banlist/unban", { method: "POST", body: { steamid } });
+    toast(d.message, true);
+    refreshBanlist();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function showSaves() {
+  if (timer) clearInterval(timer);
+  document.getElementById("app").innerHTML = `
+    <div class="topbar">
+      <h1>🎮 Palworld <span>存档管理</span></h1>
+      <div class="tabs">
+        <button class="tab" onclick="showDashboard()">📊 仪表盘</button>
+        <button class="tab" onclick="showPlayers()">👥 玩家管理</button>
+        <button class="tab" onclick="showConfig()">⚙️ 配置管理</button>
+        <button class="tab active" onclick="showSaves()">💾 存档管理</button>
+      </div>
+      <button class="btn btn-logout" onclick="logout()">退出</button>
+    </div>
+    <div class="container">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>💾 存档备份</h2>
+          <button class="btn btn-save" onclick="doBackup()"><span class="btn-icon">💾</span>立即备份</button>
+        </div>
+        <div id="savesList">加载中...</div>
+      </div>
+    </div>`;
+
+  refreshSaves();
+}
+
+async function refreshSaves() {
+  try {
+    const d = await api("/api/saves");
+    const saves = d.saves || [];
+    if (saves.length === 0) {
+      document.getElementById("savesList").innerHTML =
+        '<div class="empty-state">暂无备份。点上方「立即备份」创建第一个</div>';
+      return;
+    }
+    const html = saves.map(s => {
+      const date = new Date(s.time * 1000);
+      const dateStr = date.toLocaleString("zh-CN");
+      const sizeMb = (s.size / 1048576).toFixed(2);
+      return `
+        <div class="item-row">
+          <div class="item-main">
+            <div class="item-title">${escapeHtml(s.name)}</div>
+            <div class="item-sub">${dateStr} · ${sizeMb} MB</div>
+          </div>
+          <div class="item-actions">
+            <button class="btn btn-restart" onclick="doRestore('${escapeAttr(s.name)}')">恢复</button>
+            <button class="btn btn-ban" onclick="doDelete('${escapeAttr(s.name)}')">删除</button>
+          </div>
+        </div>`;
+    }).join("");
+    document.getElementById("savesList").innerHTML = html;
+  } catch (e) {
+    document.getElementById("savesList").innerHTML =
+      `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function doBackup() {
+  toast("正在备份，请稍候...", true);
+  try {
+    const d = await api("/api/saves/backup", { method: "POST", body: {} });
+    toast(d.message, d.ok);
+    if (d.ok) refreshSaves();
+  } catch (e) { toast(e.message, false); }
+}
+
+async function doRestore(name) {
+  if (!confirm("恢复备份 " + name + " ?\n\n当前存档会被覆盖，服务器将重启，在线玩家会被踢出。")) return;
+  toast("正在恢复，服务器将重启...", true);
+  try {
+    const d = await api("/api/saves/restore", { method: "POST", body: { name } });
+    toast(d.message, d.ok);
+  } catch (e) { toast(e.message, false); }
+}
+
+async function doDelete(name) {
+  if (!confirm("删除备份 " + name + " ? 此操作不可撤销。")) return;
+  try {
+    const d = await api("/api/saves/delete", { method: "POST", body: { name } });
+    toast(d.message, d.ok);
+    if (d.ok) refreshSaves();
+  } catch (e) { toast(e.message, false); }
+}
+
 async function showConfig() {
   if (timer) clearInterval(timer);
   document.getElementById("app").innerHTML = `
     <div class="topbar">
-      <h1>Palworld <span>配置管理</span></h1>
+      <h1>🎮 Palworld <span>配置管理</span></h1>
       <div class="tabs">
-        <button class="tab" onclick="showDashboard()">仪表盘</button>
-        <button class="tab active" onclick="showConfig()">配置管理</button>
+        <button class="tab" onclick="showDashboard()">📊 仪表盘</button>
+        <button class="tab" onclick="showPlayers()">👥 玩家管理</button>
+        <button class="tab active" onclick="showConfig()">⚙️ 配置管理</button>
+        <button class="tab" onclick="showSaves()">💾 存档管理</button>
       </div>
       <button class="btn btn-logout" onclick="logout()">退出</button>
     </div>
