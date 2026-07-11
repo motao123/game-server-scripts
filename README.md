@@ -262,11 +262,19 @@ terraria-manager info     # 服务器信息
 
 ## Web 管理面板（幻兽帕鲁）
 
-可选组件，为幻兽帕鲁服务器提供可视化网页端，免去命令行操作。
+可选组件，为幻兽帕鲁服务器提供可视化网页端，免去命令行操作。基于 Python3 标准库实现，**无额外依赖**，通过 RCON 和 systemctl 控制服务器。
+
+### 前置条件
+
+必须先完成幻兽帕鲁服务器部署（`palworld-server-install.sh`），因为 Web 面板依赖：
+
+- `/usr/local/bin/pal-rcon` -- RCON 客户端（主脚本安装）
+- `PalWorldSettings.ini` -- 从中读取 RCON 端口和管理员密码
+- `python3` -- 主脚本已安装
+
+未装主脚本直接跑 Web 安装会报错退出。
 
 ### 安装
-
-先完成幻兽帕鲁服务器部署（`palworld-server-install.sh`），再额外跑 Web 面板安装脚本：
 
 ```bash
 cd game-server-scripts
@@ -274,51 +282,196 @@ chmod +x palworld-web-install.sh
 sudo ./palworld-web-install.sh
 ```
 
-安装过程交互配置 Web 端口、绑定地址、Web 密码（留空自动生成 18 位随机密码）。从 `PalWorldSettings.ini` 自动读取 RCON 端口和管理员密码，无需重复输入。
+安装过程交互配置三项：
 
-### 功能
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| Web 端口 | `8080` | 浏览器访问端口 |
+| 绑定地址 | `0.0.0.0` | `0.0.0.0`=公网可访问，`127.0.0.1`=仅本地（需 SSH 隧道） |
+| Web 密码 | 留空自动生成 | 留空时自动生成 18 位随机密码；建议自行设置强密码 |
 
-- **仪表盘**：服务状态 / 启动时间 / 当前内存 / 峰值内存
-- **服务控制**：启动 / 停止 / 重启 / 保存存档（一键）
-- **广播消息**：网页输入，游戏内全服广播
-- **在线玩家**：查看玩家名 + SteamID，一键踢出 / 封禁 / 解封
-- **日志查看**：最近 200 行，30 秒自动刷新
+**RCON 端口和管理员密码无需输入**，脚本自动从 `PalWorldSettings.ini` 读取。
 
-### 访问
-
-安装完成会打印访问地址和密码。默认端口 8080。
+也可以用环境变量预设，跳过交互：
 
 ```bash
-# 查看服务状态
-systemctl status pal-web
+sudo env WEB_PORT=8080 WEB_BIND=0.0.0.0 WEB_PASSWORD='你的强密码' \
+    ./palworld-web-install.sh
+```
 
-# 查看登录日志
-journalctl -u pal-web | grep login
+### 安装产物
 
-# 重启面板
-sudo systemctl restart pal-web
+| 路径 | 用途 | 权限 |
+|------|------|------|
+| `/usr/local/bin/pal-web-ui` | Web 应用（Python 脚本） | 755 root:root |
+| `/etc/pal-web.env` | 配置（含 Web 密码 + RCON 密码） | 600 root:root |
+| `/etc/systemd/system/pal-web.service` | systemd 服务 | 644 root:root |
+
+### 功能详解
+
+登录后 dashboard 包含以下面板（30 秒自动刷新状态/玩家/日志）：
+
+**仪表盘卡片**
+- 服务状态（运行中/已停止）
+- 启动时间（systemd ActiveEnterTimestamp）
+- 当前内存（MemoryCurrent，GB）
+- 峰值内存（MemoryPeak，GB）
+
+**服务控制**
+- `启动` / `停止` / `重启` -- 调 `systemctl start/stop/restart pal-server`，走 ExecStop 自动 RCON Save 落盘
+- `保存存档` -- 调 RCON `Save`，立即落盘（不用重启）
+
+**广播消息**
+- 输入文本点发送，调 RCON `Broadcast <msg>`，游戏内全服可见
+- 支持中文
+
+**在线玩家**
+- 表格列出：玩家名 / SteamID / 操作按钮
+- `踢出` -- RCON `KickPlayer <SteamID>`
+- `封禁` -- RCON `BanPlayer <SteamID>`（封禁后该 SteamID 无法再次连接）
+- 解封需通过命令行：`pal-manager unban <SteamID>`
+
+**最近日志**
+- 显示 `journalctl -u pal-server -n 200` 的最后 200 行
+- 30 秒自动刷新，自动滚到底部
+
+### 访问方式
+
+**方式一：公网直接访问**（`WEB_BIND=0.0.0.0` 时）
+
+```
+http://你的服务器IP:8080
+```
+
+需在云控制台安全组放行 TCP 8080。**强烈建议配合反代 HTTPS**（见下方安全部分）。
+
+**方式二：SSH 隧道（仅本地，最安全）**（`WEB_BIND=127.0.0.1` 时）
+
+```bash
+# 本地机器执行，把远程 8080 映射到本地 8080
+ssh -L 8080:127.0.0.1:8080 root@你的服务器IP
+```
+
+然后浏览器访问 `http://127.0.0.1:8080`。Web 面板不暴露公网，只能通过 SSH 隧道访问。
+
+**改绑定地址需重装**：
+
+```bash
+sudo env WEB_BIND=127.0.0.1 ./palworld-web-install.sh
 ```
 
 ### 安全
 
 Web 面板能控制服务器（启停/踢人/广播），公网暴露务必注意：
 
-1. **强密码**：Web 密码不要与游戏 AdminPassword 相同，安装时自动生成的 18 位随机密码最安全
-2. **反代 HTTPS**：强烈建议用 Nginx/Caddy 反代 + HTTPS，避免密码明文传输
-3. **限速保护**：登录接口每 IP 每分钟最多 5 次，防暴力破解
-4. **Session 绑 IP**：cookie 窃取后换 IP 无法使用
-5. **定期查日志**：`journalctl -u pal-web` 检查异常登录
-6. **不用时关公网**：改 `WEB_BIND=127.0.0.1` 重装，仅本地访问（需 SSH 隧道）
+#### 1. 强密码
+
+Web 密码**不要与游戏 AdminPassword 相同**（AdminPassword 可能泄露给其他管理员）。安装时自动生成的 18 位随机密码最安全，或自行设置 16 位以上含大小写+数字+符号的密码。
+
+修改密码需重装：
+
+```bash
+sudo env WEB_PASSWORD='新密码' ./palworld-web-install.sh
+```
+
+#### 2. 反代 HTTPS（强烈建议）
+
+Web 面板默认 HTTP，密码明文传输。公网使用必须反代 HTTPS。
+
+**Nginx 反代示例**（需有域名 + 证书）：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name pal.yourdomain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/pal.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pal.yourdomain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+}
+```
+
+反代后把 `WEB_BIND` 改成 `127.0.0.1` 重装，仅本地监听，公网只能通过 HTTPS 访问。
+
+**Caddy 反代示例**（自动 HTTPS）：
+
+```
+pal.yourdomain.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+#### 3. 内置防护
+
+Web 面板自身已有以下防护（无需额外配置）：
+
+| 机制 | 说明 |
+|------|------|
+| Session cookie | `HttpOnly` + `SameSite=Lax` + IP 绑定 + 2 小时过期 |
+| CSRF token | 所有 POST 请求必须带 `X-CSRF-Token` 头，2 小时过期 |
+| 登录限速 | 每 IP 每分钟最多 5 次失败，防暴力破解 |
+| 配置文件 | `/etc/pal-web.env` 权限 600，仅 root 可读 |
+
+#### 4. 监控登录
+
+定期检查异常登录：
+
+```bash
+journalctl -u pal-web | grep -E 'login|POST /api/login'
+```
+
+#### 5. 不用时关公网
+
+如果只是临时用，不用时改回仅本地：
+
+```bash
+sudo env WEB_BIND=127.0.0.1 ./palworld-web-install.sh
+```
+
+或者直接停服务：
+
+```bash
+sudo systemctl stop pal-web
+```
+
+### 故障排查
+
+**登录后立即跳回登录页**：session cookie 被浏览器拒绝，通常是 HTTPS/HTTP 混用导致。用反代 HTTPS 全程访问，或用 SSH 隧道。
+
+**操作按钮没反应/报 403**：CSRF token 过期，刷新页面重新登录即可。
+
+**显示「RCON 超时」或玩家列表为空**：
+- 确认服务器已启动：`systemctl status pal-server`
+- 确认 RCON 已启用：`grep RCONEnabled PalWorldSettings.ini` 应为 `True`
+- 测试 RCON：`pal-manager players`，若失败检查 RCON 端口和密码
+
+**Web 面板打不开**：
+- 检查服务状态：`systemctl status pal-web`
+- 查看日志：`journalctl -u pal-web -n 50`
+- 检查端口监听：`ss -tlnp | grep 8080`
+- 云安全组是否放行 TCP 8080（仅 `WEB_BIND=0.0.0.0` 时需要）
+
+**改了 PalWorldSettings.ini 的 RCON 端口/密码后 Web 失效**：重跑 `palworld-web-install.sh`，会重新读取配置写入 `/etc/pal-web.env`。
 
 ### 卸载 Web 面板
 
 ```bash
 sudo systemctl stop pal-web
 sudo systemctl disable pal-web
-sudo rm /etc/systemd/system/pal-web.service
-sudo rm /usr/local/bin/pal-web-ui /etc/pal-web.env
+sudo rm -f /etc/systemd/system/pal-web.service \
+           /usr/local/bin/pal-web-ui \
+           /etc/pal-web.env
 sudo systemctl daemon-reload
 ```
+
+卸载不影响游戏服务器和存档。
 
 ---
 
