@@ -1,0 +1,7 @@
+node_modules/
+web/node_modules/
+gsm-panel
+gsm-panel.exe
+.claude/
+*.log
+*.tsbuildinfo

@@ -14,8 +14,9 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 PAL_SETTINGS="/home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
-WEB_APP_SRC="$(dirname "$(readlink -f "$0")")/palworld-web-ui.py"
-WEB_APP_DEST="/usr/local/bin/pal-web-ui"
+WEB_APP_SRC="$(dirname "$(readlink -f "$0")")/gsm-panel"
+WEB_APP_DEST="/usr/local/bin/gsm-panel"
+WEB_COMPAT_DEST="/usr/local/bin/pal-web-ui"
 WEB_ENV_FILE="/etc/pal-web.env"
 SERVICE_NAME="pal-web"
 
@@ -42,11 +43,8 @@ check_deps() {
         exit 1
     fi
     if [[ ! -f "$WEB_APP_SRC" ]]; then
-        error "未找到 Web 应用源码: $WEB_APP_SRC"
-        error "请确认 palworld-web-ui.py 与本脚本在同一目录"
-        exit 1
+        command -v go &>/dev/null || { error "未找到 $WEB_APP_SRC，且缺少 go，无法构建 Go 面板"; exit 1; }
     fi
-    command -v python3 &>/dev/null || { error "缺少 python3"; exit 1; }
 }
 
 # 从 PalWorldSettings.ini 解析配置项
@@ -97,10 +95,21 @@ user_config() {
 install_web_app() {
     step "安装 Web 应用"
 
+    if [[ ! -f "$WEB_APP_SRC" ]]; then
+        info "未找到预构建二进制，开始构建 Go + React 面板"
+        local repo_dir
+        repo_dir="$(dirname "$(readlink -f "$0")")"
+        if [[ -d "$repo_dir/web" ]]; then
+            (cd "$repo_dir/web" && npm install && npm run build)
+        fi
+        (cd "$repo_dir" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o gsm-panel ./cmd/gsm-panel)
+    fi
+
     info "拷贝 $WEB_APP_SRC -> $WEB_APP_DEST"
     cp "$WEB_APP_SRC" "$WEB_APP_DEST"
     chmod 755 "$WEB_APP_DEST"
     chown root:root "$WEB_APP_DEST"
+    ln -sf "$WEB_APP_DEST" "$WEB_COMPAT_DEST"
 
     # 从 PalWorldSettings.ini 读取 RCON 端口、管理员密码、REST API 端口
     local rcon_port rcon_pass rest_api_port
@@ -150,7 +159,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=${WEB_ENV_FILE}
-ExecStart=/usr/bin/python3 ${WEB_APP_DEST}
+ExecStart=${WEB_APP_DEST} web
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
