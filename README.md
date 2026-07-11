@@ -181,6 +181,7 @@ pal-manager stop        # 停止服务器
 pal-manager restart     # 重启服务器
 pal-manager status      # 查看状态
 pal-manager logs        # 实时日志
+pal-manager logs-all    # 最近 500 行日志
 pal-manager update      # 更新服务器版本
 pal-manager backup      # 立即备份存档
 pal-manager config      # 编辑配置文件
@@ -325,30 +326,35 @@ sudo systemctl daemon-reload
 
 脚本会自动配置以下定时任务：
 
-| 任务 | 频率 | 说明 |
-|------|------|------|
-| 自动备份 | 每 6 小时 | 备份前先 RCON Save 落盘，最多保留 30 份 |
-| 自动重启 | 每日凌晨 4:00 | 仅帕鲁服务器，广播预警 + RCON Save + 优雅重启 |
+| 任务 | 适用游戏 | 频率 | 说明 |
+|------|----------|------|------|
+| 自动备份 | 全部 | 每 6 小时 (00:00/06:00/12:00/18:00) | 帕鲁备份前先 RCON `Save` 落盘；保留最近 30 份 |
+| 自动重启 | 仅幻兽帕鲁 | 每日凌晨 4:00 | 广播预警 60s → RCON `Save` → systemctl restart（走 ExecStop 再次 Save，双保险） |
 
-备份文件命名格式：`游戏名_backup_日期_时间.tar.gz`
+备份文件命名格式：`游戏名_backup_YYYYMMDD_HHMMSS.tar.gz`，存放路径见上方目录结构表。
+
+查看/管理定时任务：
+
+```bash
+systemctl list-timers --all | grep -E 'pal-server|mc-server|valheim-server|terraria-server'
+systemctl status pal-server-backup.timer     # 查看备份定时器状态
+sudo systemctl stop pal-server-restart.timer # 临时停用帕鲁每日重启
+```
 
 ## 目录结构
 
 部署后的默认安装路径：
 
-```
-/opt/palworld/          # 幻兽帕鲁
-/opt/minecraft/         # Minecraft
-/opt/valheim/           # 英灵神殿
-/opt/terraria/          # 泰拉瑞亚
+| 游戏 | 安装目录 | 存档目录 | 备份目录 |
+|------|----------|----------|----------|
+| 幻兽帕鲁 | `/home/steam/Steam/steamapps/common/PalServer` | `Pal/Saved/SaveGames` | `/home/steam/pal-backups` |
+| Minecraft | `/opt/minecraft` | `/opt/minecraft/world` | `/opt/minecraft/backups` |
+| 英灵神殿 | `/opt/valheim/server` | `/opt/valheim/world` | `/opt/valheim/backups` |
+| 泰拉瑞亚 | `/opt/terraria/server` | `/opt/terraria/world` | `/opt/terraria/backups` |
 
-每个游戏目录下：
-├── server/             # 服务器文件
-├── world/              # 存档目录
-├── backups/            # 备份目录
-├── start.sh            # 启动脚本
-└── 配置文件             # 各游戏配置
-```
+幻兽帕鲁走 SteamCMD 标准路径（`/home/steam/Steam/steamapps/common/`），服务以 `steam` 用户运行；其他游戏安装在 `/opt/` 下，各有独立的 server/world/backups 子目录。
+
+管理脚本统一位于 `/usr/local/bin/`（如 `pal-manager`、`mc-manager`），systemd 服务文件位于 `/etc/systemd/system/`（如 `pal-server.service`）。
 
 ## 常见问题
 
@@ -425,12 +431,24 @@ pal-manager update      # 自动下载最新版本并重启
 
 ### 如何恢复备份
 
+以幻兽帕鲁为例（备份包内是 `SaveGames/` 目录，解压到 `Pal/Saved/` 下覆盖现有存档）：
+
 ```bash
 pal-manager stop
-cd /opt/palworld
-tar -xzf backups/pal_backup_XXXXXXXX_XXXXXX.tar.gz
+sudo -u steam tar -xzf /home/steam/pal-backups/pal_backup_XXXXXXXX_XXXXXX.tar.gz \
+    -C /home/steam/Steam/steamapps/common/PalServer/Pal/Saved
 pal-manager start
 ```
+
+其他游戏类似，替换备份路径和存档目录即可：
+
+| 游戏 | 备份路径 | 解压目标 |
+|------|----------|----------|
+| Minecraft | `/opt/minecraft/backups/mc_backup_*.tar.gz` | `/opt/minecraft` |
+| 英灵神殿 | `/opt/valheim/backups/valheim_backup_*.tar.gz` | `/opt/valheim` |
+| 泰拉瑞亚 | `/opt/terraria/backups/terraria_backup_*.tar.gz` | `/opt/terraria` |
+
+恢复前建议先 `pal-manager stop`（或对应管理命令）停止服务器，避免文件占用。恢复后用对应管理命令 `start` 启动。
 
 ## systemd 服务
 
@@ -452,23 +470,43 @@ sudo journalctl -u 游戏名-server -f   # 实时日志
 
 ## 卸载
 
-```bash
-# 停止服务
-sudo systemctl stop 游戏名-server
-sudo systemctl disable 游戏名-server
+以幻兽帕鲁为例（其他游戏将 `pal` / `palworld` 替换为对应游戏名，路径按上方目录结构表调整）：
 
-# 删除服务文件
-sudo rm /etc/systemd/system/游戏名-server*
+```bash
+# 1. 停止主服务
+sudo systemctl stop pal-server
+sudo systemctl disable pal-server
+
+# 2. 停止并禁用定时器（帕鲁有 restart + backup 两个定时器）
+sudo systemctl stop pal-server-restart.timer pal-server-backup.timer 2>/dev/null
+sudo systemctl disable pal-server-restart.timer pal-server-backup.timer 2>/dev/null
+
+# 3. 删除 systemd 服务/定时器文件
+sudo rm /etc/systemd/system/pal-server*
 sudo systemctl daemon-reload
 
-# 删除安装目录
-sudo rm -rf /opt/游戏名
+# 4. 删除管理脚本和辅助脚本
+sudo rm -f /usr/local/bin/pal-manager \
+           /usr/local/bin/pal-rcon \
+           /usr/local/bin/pal-stop \
+           /usr/local/bin/pal-graceful-restart \
+           /usr/local/bin/pal-backup
 
-# 删除管理脚本
-sudo rm /usr/local/bin/游戏名-manager
+# 5. 删除安装目录和备份目录
+sudo rm -rf /home/steam/Steam/steamapps/common/PalServer
+sudo rm -rf /home/steam/pal-backups
 
-# 删除用户
-sudo userdel -r 用户名
+# 6. 删除 steam 用户（可选，若其他游戏也用 steam 用户则不要删）
+sudo userdel -r steam
+```
+
+若安装了 Web 管理面板，还需卸载：
+
+```bash
+sudo systemctl stop pal-web
+sudo systemctl disable pal-web
+sudo rm -f /etc/systemd/system/pal-web.service /usr/local/bin/pal-web-ui /etc/pal-web.env
+sudo systemctl daemon-reload
 ```
 
 ## License
