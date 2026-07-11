@@ -93,7 +93,7 @@ func (s *Server) handleFilesWrite(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"sessions": []any{}})
+	writeJSON(w, map[string]any{"sessions": s.terminal.List()})
 }
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"tasks": s.tasks.List()})
@@ -104,10 +104,22 @@ func (s *Server) handleEnvironment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "java": java, "steamcmd": steamcmd})
 }
 func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"plugins": []any{}, "enabled": false})
+	writeJSON(w, map[string]any{"plugins": s.scanPlugins(), "enabled": true})
 }
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"bind": s.cfg.Bind, "port": s.cfg.Port, "dataDir": s.cfg.DataDir, "palServerDir": s.cfg.PalServerDir, "backupDir": s.cfg.BackupDir})
+	writeJSON(w, map[string]any{
+		"bind":           s.cfg.Bind,
+		"port":           s.cfg.Port,
+		"dataDir":        s.cfg.DataDir,
+		"palServerDir":   s.cfg.PalServerDir,
+		"backupDir":      s.cfg.BackupDir,
+		"whitelistFile":  s.cfg.WhitelistFile,
+		"rconPort":       s.cfg.RCONPort,
+		"restApiPort":    s.cfg.RESTAPIPort,
+		"service":        s.cfg.Service,
+		"fileRoots":      []string{s.defaultFileRoot(), s.cfg.PalServerDir, s.cfg.BackupDir, s.cfg.DataDir},
+		"securityNotice": "公网暴露请使用反代 HTTPS，并设置强密码；终端和文件管理仅限管理员",
+	})
 }
 func (s *Server) handleRCONCommand(w http.ResponseWriter, r *http.Request) {
 	var body struct{ Command string }
@@ -138,10 +150,49 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if err := conn.ReadJSON(&msg); err != nil {
 			return
 		}
-		if msg["type"] == "system-stats" {
+		switch msg["type"] {
+		case "terminal-start", "create-pty":
+			shell, _ := msg["shell"].(string)
+			cwd, _ := msg["cwd"].(string)
+			if cwd == "" {
+				cwd, _ = msg["workingDirectory"].(string)
+			}
+			cols := uint16(numberValue(msg["cols"], 100))
+			rows := uint16(numberValue(msg["rows"], 30))
+			id, err := s.terminal.Start(conn, shell, cwd, cols, rows)
+			if err != nil {
+				_ = conn.WriteJSON(map[string]any{"type": "terminal-error", "error": err.Error()})
+			} else {
+				_ = conn.WriteJSON(map[string]any{"type": "terminal-started", "sessionId": id})
+			}
+		case "terminal-input":
+			id, _ := msg["sessionId"].(string)
+			data, _ := msg["data"].(string)
+			if err := s.terminal.Write(id, data); err != nil {
+				_ = conn.WriteJSON(map[string]any{"type": "terminal-error", "sessionId": id, "error": err.Error()})
+			}
+		case "terminal-resize":
+			id, _ := msg["sessionId"].(string)
+			_ = s.terminal.Resize(id, uint16(numberValue(msg["cols"], 100)), uint16(numberValue(msg["rows"], 30)))
+		case "terminal-close", "close-pty":
+			id, _ := msg["sessionId"].(string)
+			s.terminal.Close(id)
+			_ = conn.WriteJSON(map[string]any{"type": "terminal-closed", "sessionId": id})
+		case "system-stats":
 			_ = conn.WriteJSON(map[string]any{"type": "system-stats", "data": map[string]any{"ok": true}})
-		} else {
+		default:
 			_ = conn.WriteJSON(map[string]any{"type": "echo", "data": msg})
 		}
+	}
+}
+
+func numberValue(v any, fallback float64) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	default:
+		return fallback
 	}
 }

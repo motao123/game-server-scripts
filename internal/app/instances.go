@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
 )
@@ -49,11 +48,7 @@ func (s *InstanceStore) Load() error {
 func (s *InstanceStore) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(s.path), 0755); err != nil {
-		return err
-	}
-	data, _ := json.MarshalIndent(s.list, "", "  ")
-	return os.WriteFile(s.path, data, 0644)
+	return s.saveLocked()
 }
 
 func (s *InstanceStore) List() []Instance {

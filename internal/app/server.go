@@ -16,6 +16,7 @@ import (
 	"game-server-scripts/internal/config"
 	"game-server-scripts/internal/palworld"
 	"game-server-scripts/internal/system"
+	"game-server-scripts/internal/terminal"
 )
 
 type Server struct {
@@ -25,6 +26,8 @@ type Server struct {
 	httpSrv   *http.Server
 	instances *InstanceStore
 	tasks     *TaskStore
+	terminal  *terminal.Manager
+	scheduler *Scheduler
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -34,7 +37,9 @@ func NewServer(cfg config.Config) (*Server, error) {
 		palworld:  palworld.Service{Config: cfg},
 		instances: NewInstanceStore(filepath.Join(cfg.DataDir, "instances.json")),
 		tasks:     NewTaskStore(filepath.Join(cfg.DataDir, "scheduled_tasks.json")),
+		terminal:  terminal.NewManager(),
 	}
+	s.scheduler = NewScheduler(s)
 	return s, nil
 }
 
@@ -52,6 +57,8 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 
 	log.Printf("GSM Panel listening on %s", addr)
+	s.scheduler.Start()
+	defer s.scheduler.Stop()
 	if err := s.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -98,6 +105,12 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/banlist/unban", s.requirePost(s.handleBanlistUnban))
 
 	mux.HandleFunc("/api/instances", s.require(s.handleInstances))
+	mux.HandleFunc("/api/instances/create", s.requirePost(s.handleInstanceCreate))
+	mux.HandleFunc("/api/instances/update", s.requirePost(s.handleInstanceUpdate))
+	mux.HandleFunc("/api/instances/delete", s.requirePost(s.handleInstanceDelete))
+	mux.HandleFunc("/api/instances/start", s.requirePost(s.handleInstanceAction("start")))
+	mux.HandleFunc("/api/instances/stop", s.requirePost(s.handleInstanceAction("stop")))
+	mux.HandleFunc("/api/instances/restart", s.requirePost(s.handleInstanceAction("restart")))
 	mux.HandleFunc("/api/games", s.require(s.handleGames))
 	mux.HandleFunc("/api/game-deployment/status", s.require(s.handleDeploymentStatus))
 	mux.HandleFunc("/api/game-deployment/install", s.requirePost(s.handleDeploymentInstall))
@@ -110,6 +123,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/delete", s.requirePost(s.handleFilesDelete))
 	mux.HandleFunc("/api/files/mkdir", s.requirePost(s.handleFilesMkdir))
 	mux.HandleFunc("/api/files/compress", s.requirePost(s.handleFilesCompress))
+	mux.HandleFunc("/api/files/extract", s.requirePost(s.handleFilesExtract))
+	mux.HandleFunc("/api/files/rename", s.requirePost(s.handleFilesRename))
 	mux.HandleFunc("/api/terminal/sessions", s.require(s.handleTerminalSessions))
 	mux.HandleFunc("/api/scheduled-tasks", s.require(s.handleTasks))
 	mux.HandleFunc("/api/scheduled-tasks/create", s.requirePost(s.handleTaskCreate))

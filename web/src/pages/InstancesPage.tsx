@@ -1,26 +1,28 @@
-import { Button, Card, Form, Input, List, Tabs, Tag, Upload, message, Modal } from 'antd'
+import { Button, Card, Form, Input, List, Tabs, Tag, Upload, message, Modal, Table, Space } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
 export default function InstancesPage() {
+  const [instances, setInstances] = useState<any[]>([])
   const [players, setPlayers] = useState<any[]>([])
   const [saves, setSaves] = useState<any[]>([])
   const [whitelist, setWhitelist] = useState<any[]>([])
   const [banlist, setBanlist] = useState<any[]>([])
   const [config, setConfig] = useState<any>({ categories: [] })
   async function refresh() {
-    const [p, s, w, b, c] = await Promise.all([
-      api<{ players: any[] }>('/api/players'), api<{ saves: any[] }>('/api/saves'), api<{ whitelist: any[] }>('/api/whitelist'), api<{ banlist: any[] }>('/api/banlist'), api<any>('/api/config')
+    const [i, p, s, w, b, c] = await Promise.all([
+      api<{ instances: any[] }>('/api/instances'), api<{ players: any[] }>('/api/players'), api<{ saves: any[] }>('/api/saves'), api<{ whitelist: any[] }>('/api/whitelist'), api<{ banlist: any[] }>('/api/banlist'), api<any>('/api/config')
     ])
-    setPlayers(p.players || []); setSaves(s.saves || []); setWhitelist(w.whitelist || []); setBanlist(b.banlist || []); setConfig(c)
+    setInstances(i.instances || []); setPlayers(p.players || []); setSaves(s.saves || []); setWhitelist(w.whitelist || []); setBanlist(b.banlist || []); setConfig(c)
   }
   useEffect(() => { refresh() }, [])
-  async function post(path: string, body: any, ok: string) { try { const d = await api<any>(path, { method: 'POST', body }); message.success(d.message || ok); refresh() } catch (e: any) { message.error(e.message) } }
+  async function post(path: string, body: any, ok: string) { try { const d = await api<any>(path, { method: 'POST', body }); if (d.ok === false) throw new Error(d.error || d.message); message.success(d.message || ok); refresh() } catch (e: any) { message.error(e.message) } }
   return <>
-    <PageHeader title="Palworld 实例" desc="玩家、存档、配置、白名单和封禁管理" actions={<Button onClick={refresh}>刷新</Button>} />
+    <PageHeader title="实例管理" desc="通用实例生命周期 + Palworld 专项管理" actions={<Button onClick={refresh}>刷新</Button>} />
     <Tabs items={[
+      { key: 'instances', label: '实例', children: <GenericInstances instances={instances} post={post} /> },
       { key: 'players', label: '玩家', children: <Card><List dataSource={players} renderItem={(p) => <List.Item actions={[<Button onClick={() => post('/api/kick', { steamid: p.steamid }, '已踢出')}>踢出</Button>, <Button danger onClick={() => post('/api/ban', { steamid: p.steamid }, '已封禁')}>封禁</Button>]}><List.Item.Meta title={p.name || p.steamid} description={`SteamID: ${p.steamid || '-'} PlayerUID: ${p.playeruid || '-'}`} /></List.Item>} /></Card> },
       { key: 'saves', label: '存档', children: <Saves saves={saves} refresh={refresh} /> },
       { key: 'config', label: '配置', children: <ConfigView config={config} /> },
@@ -28,6 +30,22 @@ export default function InstancesPage() {
       { key: 'banlist', label: '封禁', children: <Card><List dataSource={banlist} renderItem={(b) => <List.Item actions={[<Button onClick={() => post('/api/banlist/unban', { steamid: b.steamid }, '已解封')}>解封</Button>]}>{b.steamid}</List.Item>} /></Card> }
     ]} />
   </>
+}
+
+function GenericInstances({ instances, post }: { instances: any[]; post: (p: string, b: any, ok: string) => void }) {
+  return <Card title="通用实例" extra={<span>支持自定义工作目录、启动命令、停止命令</span>}>
+    <Form layout="inline" onFinish={(v) => post('/api/instances/create', { ...v, instanceType: 'generic' }, '已创建实例')}>
+      <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="实例名称" /></Form.Item>
+      <Form.Item name="workingDirectory"><Input placeholder="工作目录" /></Form.Item>
+      <Form.Item name="startCommand"><Input placeholder="启动命令" /></Form.Item>
+      <Form.Item name="stopCommand"><Input placeholder="停止命令" /></Form.Item>
+      <Button htmlType="submit" type="primary">创建</Button>
+    </Form>
+    <Table rowKey="id" dataSource={instances} pagination={false} className="section-card" columns={[
+      { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status' }, { title: '工作目录', dataIndex: 'workingDirectory' },
+      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')}>启动</Button><Button onClick={() => post('/api/instances/stop', { id: r.id }, '已停止')}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')}>重启</Button><Button danger onClick={() => post('/api/instances/delete', { id: r.id }, '已删除')}>删除</Button></Space> }
+    ]} />
+  </Card>
 }
 
 function Saves({ saves, refresh }: { saves: any[]; refresh: () => void }) {

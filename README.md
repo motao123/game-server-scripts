@@ -260,56 +260,39 @@ terraria-manager info     # 服务器信息
 
 ---
 
-## Web 管理面板（幻兽帕鲁）
+## Web 管理面板（Go + React）
 
-可选组件，为幻兽帕鲁服务器提供可视化网页端，免去命令行操作。基于 Python3 标准库实现，**无额外依赖**，通过 RCON 和 systemctl 控制服务器。
+可选组件，为游戏服务器提供可视化网页端，参考 `GameServerManager` 的功能结构，配色样式参考 `palworld-go` 的 Material 明亮主题。后端由 Go 实现，前端由 React + Vite + Ant Design 实现，构建产物通过 Go `embed` 内嵌，部署为单个 Linux 二进制 `gsm-panel`。
+
+### 功能模块
+
+| 模块 | 说明 |
+|------|------|
+| 仪表盘 | 服务状态、CPU/内存/磁盘、系统运行时长、在线玩家、最近日志、服务控制、广播 |
+| 终端 | WebSocket + PTY 真实 shell 会话，支持输入、关闭 |
+| 实例管理 | 通用实例 CRUD 与启动/停止/重启，Palworld 专项实例默认导入 |
+| 游戏部署 | Palworld / Minecraft Java/Bedrock / Valheim / Terraria 模板与 SteamCMD 状态 |
+| 文件管理 | 受限根目录浏览/读取/写入/上传/下载/删除/新建目录/重命名/tar.gz 压缩与解压 |
+| 计划任务 | cron 调度执行 backup / shell / instance 动作 |
+| 环境管理 | OS/Java/SteamCMD 检测，返回 Java/SteamCMD/工具链建议安装命令 |
+| RCON | 原生 Go RCON 客户端，Palworld 默认连接本机 RCON |
+| 插件 | 扫描 `data/plugins/*/plugin.json`，启用/禁用元数据，不执行插件代码 |
+| 设置 | 面板运行参数、路径策略与安全提示 |
+| Palworld 专项 | 玩家/存档/配置/白名单/封禁 API，兼容旧 Python 面板接口 |
 
 ### 前置条件
 
-必须先完成幻兽帕鲁服务器部署（`palworld-server-install.sh`），因为 Web 面板依赖：
-
-- `/usr/local/bin/pal-rcon` -- RCON 客户端（主脚本安装）
-- `PalWorldSettings.ini` -- 从中读取 RCON 端口和管理员密码
-- `python3` -- 主脚本已安装
-
-未装主脚本直接跑 Web 安装会报错退出。
+- 已部署 Palworld 服务器（`palworld-server-install.sh`），或仅想使用通用管理功能时可直接安装
+- 服务器需要 `gsm-panel` 二进制；安装脚本会优先使用仓库内预构建产物，缺失时使用 Go + Node 现场构建
 
 ### 安装
-
-**1. 获取脚本**（部署主脚本时已克隆过仓库，可直接 `cd game-server-scripts` 跳过本步）：
-
-```bash
-# CNB（推荐）
-git clone https://cnb.cool/code_free/game-server-scripts.git
-cd game-server-scripts
-
-# 或 Gitee（国内更快）
-git clone https://gitee.com/pigfei/game-server-scripts.git
-cd game-server-scripts
-
-# 或 GitHub
-git clone git@github.com:motao123/game-server-scripts.git
-cd game-server-scripts
-```
-
-**2. 运行安装脚本**：
 
 ```bash
 chmod +x palworld-web-install.sh
 sudo ./palworld-web-install.sh
 ```
 
-安装过程交互配置三项：
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| Web 端口 | `8080` | 浏览器访问端口 |
-| 绑定地址 | `0.0.0.0` | `0.0.0.0`=公网可访问，`127.0.0.1`=仅本地（需 SSH 隧道） |
-| Web 密码 | 留空自动生成 | 留空时自动生成 18 位随机密码；建议自行设置强密码 |
-
-**RCON 端口和管理员密码无需输入**，脚本自动从 `PalWorldSettings.ini` 读取。
-
-也可以用环境变量预设，跳过交互：
+也可用环境变量预设：
 
 ```bash
 sudo env WEB_PORT=8080 WEB_BIND=0.0.0.0 WEB_PASSWORD='你的强密码' \
@@ -320,23 +303,38 @@ sudo env WEB_PORT=8080 WEB_BIND=0.0.0.0 WEB_PASSWORD='你的强密码' \
 
 | 路径 | 用途 | 权限 |
 |------|------|------|
-| `/usr/local/bin/pal-web-ui` | Web 应用（Python 脚本） | 755 root:root |
+| `/usr/local/bin/gsm-panel` | Go 二进制 | 755 root:root |
+| `/usr/local/bin/pal-web-ui` | 兼容符号链接，指向 `gsm-panel` | 755 root:root |
 | `/etc/pal-web.env` | 配置（含 Web 密码 + RCON 密码） | 600 root:root |
 | `/etc/systemd/system/pal-web.service` | systemd 服务 | 644 root:root |
 
-### 功能详解
+### 从源码构建
 
-登录后 dashboard 包含以下面板（30 秒自动刷新状态/玩家/日志）：
+```bash
+# 前端
+cd web && npm install && npm run build   # 产物输出到 internal/app/frontend
 
-**仪表盘卡片**
-- 服务状态（运行中/已停止）
-- 启动时间（systemd ActiveEnterTimestamp）
-- 当前内存（MemoryCurrent，GB）
-- 峰值内存（MemoryPeak，GB）
+# 后端
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o gsm-panel ./cmd/gsm-panel
+```
 
-**服务控制**
-- `启动` / `停止` / `重启` -- 调 `systemctl start/stop/restart pal-server`，走 ExecStop 自动 RCON Save 落盘
-- `保存存档` -- 调 RCON `Save`，立即落盘（不用重启）
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `WEB_PASSWORD` | 空 | 面板登录密码 |
+| `WEB_BIND` | `0.0.0.0` | 绑定地址 |
+| `WEB_PORT` | `8080` | 监听端口 |
+| `SERVICE` | `pal-server` | 默认 Palworld systemd 服务名 |
+| `RCON_PORT` | `25575` | RCON 端口 |
+| `RCON_PASS` | 空 | RCON 密码 |
+| `REST_API_PORT` | `8212` | Palworld REST API 端口 |
+| `GSM_DATA_DIR` | `./data` | 实例/任务/插件数据目录 |
+
+### 兼容旧 Python 面板
+
+Go 版本保留了 `/api/status`、`/api/players`、`/api/saves`、`/api/config`、`/api/whitelist`、`/api/banlist`、`/api/kick`、`/api/ban`、`/api/unban`、`/api/broadcast`、`/api/start`、`/api/stop`、`/api/restart`、`/api/save` 等旧接口，前端旧逻辑可继续工作。`palworld-web-ui.py` 保留在仓库中作为回滚参考，不再被安装脚本使用。
+
 
 **广播消息**
 - 输入文本点发送，调 RCON `Broadcast <msg>`，游戏内全服可见

@@ -193,12 +193,40 @@ func (s *Server) handleTaskDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePluginToggle(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"ok": true, "message": "插件运行时已预留"})
+	var body struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	dir := filepath.Join(s.cfg.DataDir, "plugins", body.ID)
+	state := filepath.Join(dir, ".enabled")
+	var err error
+	if body.Enabled {
+		err = os.MkdirAll(dir, 0755)
+		if err == nil {
+			err = os.WriteFile(state, []byte("1"), 0644)
+		}
+	} else {
+		_ = os.Remove(state)
+	}
+	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
 }
 func (s *Server) handleEnvironmentInstall(w http.ResponseWriter, r *http.Request) {
-	var body map[string]any
+	var body struct {
+		Package string `json:"package"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	writeJSON(w, map[string]any{"ok": true, "message": "环境安装任务已创建", "request": body})
+	commands := map[string]string{
+		"java":     "apt-get update && apt-get install -y openjdk-17-jre-headless",
+		"steamcmd": "apt-get update && apt-get install -y steamcmd",
+		"tools":    "apt-get update && apt-get install -y curl wget tar gzip unzip",
+	}
+	cmd, ok := commands[body.Package]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "不支持的环境包")
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "message": "请在服务器确认后执行", "command": cmd})
 }
 func lookPath(name string) string                                           { p, _ := exec.LookPath(name); return p }
 func (s *Server) handleBackupList(w http.ResponseWriter, r *http.Request)   { s.handleSaves(w, r) }
