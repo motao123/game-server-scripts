@@ -100,7 +100,12 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleEnvironment(w http.ResponseWriter, r *http.Request) {
 	java, _ := exec.LookPath("java")
-	steamcmd, _ := exec.LookPath("steamcmd")
+	steamcmd := lookPath("steamcmd")
+	if steamcmd == "" {
+		if _, err := os.Stat("/usr/local/steamcmd/steamcmd.sh"); err == nil {
+			steamcmd = "/usr/local/steamcmd/steamcmd.sh"
+		}
+	}
 	writeJSON(w, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "java": java, "steamcmd": steamcmd})
 }
 func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {

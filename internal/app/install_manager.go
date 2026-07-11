@@ -31,7 +31,7 @@ func NewInstallManager() *InstallManager {
 
 var installCommands = map[string]string{
 	"java":     "apt-get update && apt-get install -y openjdk-17-jre-headless",
-	"steamcmd": "apt-get update && apt-get install -y steamcmd",
+	"steamcmd": "mkdir -p /usr/local/steamcmd && cd /usr/local/steamcmd && curl -fsSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz -o steamcmd.tar.gz && tar -xzf steamcmd.tar.gz && rm -f steamcmd.tar.gz && ln -sf /usr/local/steamcmd/steamcmd.sh /usr/local/bin/steamcmd",
 	"tools":    "apt-get update && apt-get install -y curl wget tar gzip unzip",
 }
 
