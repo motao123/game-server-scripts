@@ -910,7 +910,7 @@ def _recv(sock):
     return pkt_id, pkt_type, body
 
 
-def rcon(host, port, password, command):
+def rcon(host, port, password, command, debug=False):
     try:
         sock = socket.create_connection((host, port), timeout=5)
     except (socket.timeout, ConnectionRefusedError) as e:
@@ -922,9 +922,11 @@ def rcon(host, port, password, command):
         sock.sendall(_pack(1, 3, password))
         sock.settimeout(3)
         auth_ok = False
+        auth_pkts = 0
         try:
             while True:
                 pkt_id, pkt_type, _ = _recv(sock)
+                auth_pkts += 1
                 if pkt_id == -1:
                     print('RCON 认证失败，请检查管理员密码', file=sys.stderr)
                     return 1
@@ -937,6 +939,8 @@ def rcon(host, port, password, command):
         if not auth_ok:
             print('RCON 认证超时', file=sys.stderr)
             return 1
+        if debug:
+            print(f'[DEBUG] 认证: 读取 {auth_pkts} 个包', file=sys.stderr)
 
         # 执行命令：循环读所有响应包，用超时结束
         # 关键：不在空 body 时 break——服务器可能先发空 ack 再发实际数据
@@ -946,11 +950,17 @@ def rcon(host, port, password, command):
         sock.settimeout(3)  # 第一个包用较长超时等响应
         try:
             while len(bodies) < 20:
-                _, _, body = _recv(sock)
+                pkt_id, pkt_type, body = _recv(sock)
                 bodies.append(body)
+                if debug:
+                    preview = body[:80].replace('\n', '\\n')
+                    print(f'[DEBUG] 包 {len(bodies)}: type={pkt_type} len={len(body)} body={preview!r}', file=sys.stderr)
                 sock.settimeout(0.5)  # 后续包短超时，无新数据快速结束
         except socket.timeout:
             pass
+        if debug:
+            non_empty = [b for b in bodies if b]
+            print(f'[DEBUG] 命令响应: 共 {len(bodies)} 包, 非空 {len(non_empty)} 包', file=sys.stderr)
         output = '\n'.join(b for b in bodies if b)
         if output:
             print(output)
@@ -964,9 +974,10 @@ if __name__ == '__main__':
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=25575)
     ap.add_argument('--password', required=True)
+    ap.add_argument('--debug', action='store_true', help='输出调试信息到 stderr')
     ap.add_argument('command')
     args = ap.parse_args()
-    sys.exit(rcon(args.host, args.port, args.password, args.command))
+    sys.exit(rcon(args.host, args.port, args.password, args.command, args.debug))
 RCONEOF
 
     chmod 755 /usr/local/bin/pal-rcon
