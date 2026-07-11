@@ -311,7 +311,7 @@ def normalize_value(raw, meta):
 
 
 def write_settings(new_settings):
-    """读取原文件，合并新设置，备份后写回，chown 回 steam。
+    """读取原文件，合并新设置，备份后写回，chown 回 steam + chmod 444 只读。
     new_settings: {key: 已格式化的 ini 字面量字符串}
     """
     with open(PAL_SETTINGS, 'r', encoding='utf-8') as f:
@@ -320,10 +320,10 @@ def write_settings(new_settings):
     old = parse_settings(original)
     merged = {**old, **new_settings}
 
-    items = [f"    {k}={v}" for k, v in merged.items()]
-    new_option = "OptionSettings=(\n" + ",\n".join(items) + "\n)"
+    # 生成单行 OptionSettings（Palworld v1.0 要求单行格式，多行会被重写破坏）
+    items = [f"{k}={v}" for k, v in merged.items()]
+    new_option = "OptionSettings=(" + ",".join(items) + ")"
 
-    # 用 lambda 避免 re.sub 对替换串的特殊字符处理
     new_text = re.sub(
         r'OptionSettings=\(.*\)',
         lambda _: new_option,
@@ -335,6 +335,8 @@ def write_settings(new_settings):
     backup = f"{PAL_SETTINGS}.bak.{int(time.time())}"
     shutil.copy2(PAL_SETTINGS, backup)
 
+    # 配置文件是 444 只读，先 chmod 644 解除只读才能写入
+    os.chmod(PAL_SETTINGS, 0o644)
     with open(PAL_SETTINGS, 'w', encoding='utf-8') as f:
         f.write(new_text)
 
@@ -343,8 +345,9 @@ def write_settings(new_settings):
     uid = pwd.getpwnam(STEAM_USER).pw_uid
     gid = grp.getgrnam(STEAM_USER).gr_gid
     os.chown(PAL_SETTINGS, uid, gid)
+    # 重新设只读，阻止 Palworld 启动时重写配置破坏格式
+    os.chmod(PAL_SETTINGS, 0o444)
 
-    # 备份文件也 chown 给 steam（保持目录属主一致）
     try:
         os.chown(backup, uid, gid)
     except OSError:

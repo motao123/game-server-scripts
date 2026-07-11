@@ -493,11 +493,27 @@ configure_server() {
     # 不然 steam 进程在 root 属主目录下跑，ServerUID/配置文件写不进
     chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
 
-    # 复制默认配置文件
+    # 用官方默认配置作为基础（单行格式，含全部配置项）
+    # 关键：Palworld v1.0 启动时会重写 PalWorldSettings.ini，但重写过程会破坏
+    # 多行/带注释的格式（去引号/去逗号/去结束括号），导致配置解析失败、
+    # RCON 等功能不生效。必须用官方单行格式 + chmod 444 只读阻止重写。
     local default_config="${PAL_SERVER_DIR}/DefaultPalWorldSettings.ini"
-    if [[ -f "$default_config" ]] && [[ ! -f "${PAL_SETTINGS_FILE}" ]]; then
+    if [[ -f "$default_config" ]]; then
         cp "$default_config" "${PAL_SETTINGS_FILE}"
-        info "已从默认配置创建 PalWorldSettings.ini"
+        # sed 修改关键项（单行配置，sed 能正确处理）
+        sed -i \
+            -e "s/ServerName=\"[^\"]*\"/ServerName=\"${SERVER_NAME}\"/" \
+            -e "s/ServerDescription=\"[^\"]*\"/ServerDescription=\"Powered by Palworld Auto Installer\"/" \
+            -e "s/AdminPassword=\"[^\"]*\"/AdminPassword=\"${ADMIN_PASSWORD}\"/" \
+            -e "s|ServerPassword=\"[^\"]*\"|ServerPassword=\"${SERVER_PASSWORD}\"|" \
+            -e "s/ServerPlayerMaxNum=[0-9]*/ServerPlayerMaxNum=${MAX_PLAYERS}/" \
+            -e "s/PublicPort=[0-9]*/PublicPort=${DEFAULT_PORT}/" \
+            -e "s/RCONEnabled=[A-Za-z]*/RCONEnabled=True/" \
+            -e "s/RCONPort=[0-9]*/RCONPort=${RCON_PORT}/" \
+            -e "s/RESTAPIEnabled=[A-Za-z]*/RESTAPIEnabled=True/" \
+            -e "s/RESTAPIPort=[0-9]*/RESTAPIPort=${REST_API_PORT}/" \
+            "${PAL_SETTINGS_FILE}"
+        info "已从默认配置创建 PalWorldSettings.ini（单行格式 + sed 修改关键项）"
     fi
 
     # 如果配置文件不存在，先启动一次服务器生成默认配置
@@ -518,125 +534,18 @@ configure_server() {
     fi
 
     if [[ -f "${PAL_SETTINGS_FILE}" ]]; then
-        # 备份原始配置
-        cp "${PAL_SETTINGS_FILE}" "${PAL_SETTINGS_FILE}.bak.$(date +%Y%m%d%H%M%S)"
-        info "配置文件已备份"
-
-        # 写入优化后的配置 (基于 v1.0 官方文档)
-        # 参考: https://docs.palworldgame.com/settings-and-operation/configuration
-        cat > "${PAL_SETTINGS_FILE}" << EOF
-[/Script/Pal.PalGameWorldSettings]
-OptionSettings=(
-    ; ========== 服务器基础设置 ==========
-    ServerName="${SERVER_NAME}",
-    ServerDescription="Powered by Palworld Auto Installer",
-    AdminPassword="${ADMIN_PASSWORD}",
-    ServerPassword="${SERVER_PASSWORD}",
-    ServerPlayerMaxNum=${MAX_PLAYERS},
-    PublicPort=${DEFAULT_PORT},
-    PublicIP="",
-
-    ; ========== 远程管理 ==========
-    RCONEnabled=True,
-    RCONPort=${RCON_PORT},
-    ; v1.0 REST API，仅本地访问（官方文档明确不建议暴露公网）
-    RESTAPIEnabled=True,
-    RESTAPIPort=${REST_API_PORT},
-
-    ; ========== 跨平台联机 (v1.0 新增，替代旧 AllowConnectPlatform) ==========
-    ; 允许连接的平台，默认 Steam/Xbox/PS5/Mac 全开
-    CrossplayPlatforms=(Steam,Xbox,PS5,Mac),
-
-    ; ========== 日志格式 ==========
-    ; Text 或 Json，Json 便于日志聚合
-    LogFormatType=Text,
-
-    ; ========== 性能优化 (官方参数) ==========
-    ; Pal同步距离(cm)，降低可减少网络负载，最小5000最大15000
-    ServerReplicatePawnCullDistance=10000,
-
-    ; 每个公会最大基地数(默认4,最大10)，降低可减少服务器负载
-    BaseCampMaxNumInGuild=4,
-
-    ; 每个基地最大帕鲁数(最大50)，降低可减少计算量
-    BaseCampWorkerMaxNum=15,
-
-    ; 帕鲁刷新率(影响性能)，降低可提升性能
-    PalSpawnNumRate=1.000000,
-
-    ; 每个玩家建筑上限(0=无限制)
-    MaxBuildingLimitNum=0,
-
-    ; ========== 存档与备份 ==========
-    ; 启用自动备份(会增加磁盘负载)
-    bIsUseBackupSaveData=True,
-
-    ; ========== v1.0 服务器功能开关 ==========
-    ; 允许带 mod 的玩家进服
-    bAllowClientMod=False,
-    ; 硬核模式（死亡不能重生）
-    bHardcore=False,
-    ; 玩家离线后角色留在原地睡眠（可被攻击）
-    bExistPlayerAfterLogout=False,
-    ; 启用快速旅行
-    bEnableFastTravel=True,
-    ; 显示建造者 ID
-    bEnableBuildingPlayerUIdDisplay=False,
-    ; 公会人数上限
-    GuildPlayerMaxNum=20,
-    ; Global Palbox 跨服转移
-    bAllowGlobalPalboxExport=False,
-    bAllowGlobalPalboxImport=False,
-
-    ; ========== 语音聊天 (v1.0 新增) ==========
-    bEnableVoiceChat=False,
-    VoiceChatMaxVolumeDistance=1000,
-    VoiceChatZeroVolumeDistance=3000,
-
-    ; ========== 游戏平衡设置 ==========
-    ; 经验倍率
-    ExpRate=1.000000,
-    ; 帕鲁捕获率
-    PalCaptureRate=1.000000,
-    ; 帕鲁攻击力倍率
-    PalDamageRateAttack=1.000000,
-    ; 帕鲁防御力倍率
-    PalDamageRateDefense=1.000000,
-    ; 玩家攻击力倍率
-    PlayerDamageRateAttack=1.000000,
-    ; 玩家防御力倍率
-    PlayerDamageRateDefense=1.000000,
-    ; 死亡惩罚: None/Item/ItemAndEquipment/All
-    DeathPenalty=Item,
-    ; 白天时间流速
-    DayTimeSpeedRate=1.000000,
-    ; 夜晚时间流速
-    NightTimeSpeedRate=1.000000,
-    ; 聊天限制(每分钟最大消息数)
-    ChatPostLimitPerMinute=10,
-
-    ; ========== 显示设置 ==========
-    ; 显示加入/离开消息
-    bIsShowJoinLeftMessage=True,
-    ; 显示玩家列表
-    bShowPlayerList=True
-
-    ; ========== PvP (v1.0 试验功能，官方标注非支持) ==========
-    ; 开启 PvP 需同时设以下三项为 True：
-    ; bIsPvP=True,
-    ; bEnablePlayerToPlayerDamage=True,
-    ; bEnableDefenseOtherGuildPlayer=True,
-    ; 详见 https://docs.palworldgame.com/settings-and-operation/pvp
-)
-EOF
-        info "配置文件已写入优化参数"
+        # chown + chmod 444 只读（关键：阻止 Palworld 启动时重写配置破坏格式）
+        chown "${STEAM_USER}:${STEAM_USER}" "${PAL_SETTINGS_FILE}"
+        chmod 444 "${PAL_SETTINGS_FILE}"
+        info "PalWorldSettings.ini 已设为只读 (444)，防止 Palworld 重写破坏格式"
         info "配置文件路径: ${PAL_SETTINGS_FILE}"
     else
-        warn "配置文件未生成，首次启动后请手动检查"
+        warn "配置文件未生成，请检查服务器是否完整"
     fi
 
-    # 写配置文件以 root 身份执行 cat >，属主变 root，需再 chown 一次
+    # 存档目录 chown（配置文件已上面单独 chown + chmod 444）
     chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
+    chmod 444 "${PAL_SETTINGS_FILE}" 2>/dev/null || true
     info "存档与配置目录属主已修正为 ${STEAM_USER}"
 }
 
