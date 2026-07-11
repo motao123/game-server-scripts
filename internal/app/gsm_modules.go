@@ -20,15 +20,17 @@ type GameTemplate struct {
 	Description string   `json:"description"`
 	Ports       []int    `json:"ports"`
 	Tags        []string `json:"tags"`
+	DefaultPath string   `json:"defaultPath"`
+	AppID       int      `json:"appId,omitempty"`
 }
 
 func builtinGames() []GameTemplate {
 	return []GameTemplate{
-		{ID: "palworld", Name: "Palworld", Type: "steam", Description: "幻兽帕鲁专用服务器", Ports: []int{8211, 27015, 25575}, Tags: []string{"SteamCMD", "RCON", "REST API"}},
-		{ID: "minecraft-java", Name: "Minecraft Java", Type: "minecraft-java", Description: "Java 版服务端", Ports: []int{25565}, Tags: []string{"Java", "Paper", "Forge"}},
-		{ID: "minecraft-bedrock", Name: "Minecraft Bedrock", Type: "minecraft-bedrock", Description: "基岩版服务端", Ports: []int{19132}, Tags: []string{"Bedrock"}},
-		{ID: "valheim", Name: "Valheim", Type: "steam", Description: "英灵神殿专用服务器", Ports: []int{2456, 2457, 2458}, Tags: []string{"SteamCMD"}},
-		{ID: "terraria", Name: "Terraria", Type: "steam", Description: "泰拉瑞亚服务端", Ports: []int{7777}, Tags: []string{"SteamCMD"}},
+		{ID: "palworld", Name: "Palworld", Type: "steam", Description: "幻兽帕鲁专用服务器", Ports: []int{8211, 27015, 25575}, Tags: []string{"SteamCMD", "RCON", "REST API"}, DefaultPath: "/home/steam/Steam/steamapps/common/PalServer", AppID: 2394010},
+		{ID: "minecraft-java", Name: "Minecraft Java", Type: "minecraft-java", Description: "Java 版服务端", Ports: []int{25565}, Tags: []string{"Java", "Paper", "Forge"}, DefaultPath: "/home/steam/minecraft-java"},
+		{ID: "minecraft-bedrock", Name: "Minecraft Bedrock", Type: "minecraft-bedrock", Description: "基岩版服务端", Ports: []int{19132}, Tags: []string{"Bedrock"}, DefaultPath: "/home/steam/minecraft-bedrock"},
+		{ID: "valheim", Name: "Valheim", Type: "steam", Description: "英灵神殿专用服务器", Ports: []int{2456, 2457, 2458}, Tags: []string{"SteamCMD"}, DefaultPath: "/home/steam/Steam/steamapps/common/Valheim", AppID: 896660},
+		{ID: "terraria", Name: "Terraria", Type: "steam", Description: "泰拉瑞亚服务端", Ports: []int{7777}, Tags: []string{"SteamCMD"}, DefaultPath: "/home/steam/Steam/steamapps/common/Terraria", AppID: 105600},
 	}
 }
 
@@ -44,7 +46,27 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 		Path   string `json:"path"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	writeJSON(w, map[string]any{"ok": true, "message": fmt.Sprintf("已创建部署任务: %s -> %s", body.GameID, body.Path)})
+	var game *GameTemplate
+	for _, g := range builtinGames() {
+		if g.ID == body.GameID {
+			game = &g
+			break
+		}
+	}
+	if game == nil {
+		writeError(w, http.StatusBadRequest, "未知的游戏: "+body.GameID)
+		return
+	}
+	path := body.Path
+	if path == "" {
+		path = game.DefaultPath
+	}
+	writeJSON(w, map[string]any{
+		"ok":      true,
+		"message": fmt.Sprintf("已创建 %s 部署任务，安装路径: %s", game.Name, path),
+		"game":    game,
+		"path":    path,
+	})
 }
 
 func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
