@@ -55,9 +55,9 @@ CONFIG_SCHEMA = [
     {"key": "LogFormatType", "label": "日志格式", "type": "select", "category": "日志", "options": ["Text", "Json"], "desc": "Json 便于日志聚合"},
     # 性能
     {"key": "ServerReplicatePawnCullDistance", "label": "Pal 同步距离", "type": "number", "category": "性能", "min": 5000, "max": 15000, "step": 500, "desc": "厘米，降低可减少网络负载"},
-    {"key": "BaseCampMaxNumInGuild", "label": "每公会最大基地数", "type": "number", "category": "性能", "min": 1, "max": 10, "step": 1, "desc": "降低可减少服务器负载"},
-    {"key": "BaseCampWorkerMaxNum", "label": "每基地最大帕鲁数", "type": "number", "category": "性能", "min": 1, "max": 50, "step": 1, "desc": "降低可减少计算量"},
-    {"key": "PalSpawnNumRate", "label": "帕鲁刷新率", "type": "number", "category": "性能", "min": 0, "max": 10, "step": 0.1, "desc": "影响帕鲁生成数量，1.0 为默认"},
+    {"key": "BaseCampMaxNumInGuild", "label": "每公会最大基地数", "type": "number", "category": "性能", "min": 0, "max": 10, "step": 1, "desc": "降低可减少服务器负载，0=禁用基地"},
+    {"key": "BaseCampWorkerMaxNum", "label": "每基地最大帕鲁数", "type": "number", "category": "性能", "min": 0, "max": 50, "step": 1, "desc": "降低可减少计算量，0=禁用帕鲁工作"},
+    {"key": "PalSpawnNumRate", "label": "帕鲁刷新率", "type": "number", "category": "性能", "min": 0, "max": 10, "step": 0.1, "desc": "影响帕鲁生成数量，1.0 为默认，0=不刷新"},
     {"key": "MaxBuildingLimitNum", "label": "每玩家建筑上限", "type": "number", "category": "性能", "min": 0, "max": 100000, "step": 1, "desc": "0 = 无限制"},
     # 存档
     {"key": "bIsUseBackupSaveData", "label": "启用自动备份", "type": "bool", "category": "存档", "desc": "服务器内置备份，会增加磁盘负载"},
@@ -67,7 +67,7 @@ CONFIG_SCHEMA = [
     {"key": "bExistPlayerAfterLogout", "label": "离线角色留原地", "type": "bool", "category": "功能", "desc": "玩家离线后角色留在原地睡眠，可被攻击"},
     {"key": "bEnableFastTravel", "label": "启用快速旅行", "type": "bool", "category": "功能", "desc": ""},
     {"key": "bEnableBuildingPlayerUIdDisplay", "label": "显示建造者 ID", "type": "bool", "category": "功能", "desc": "显示建筑归属玩家"},
-    {"key": "GuildPlayerMaxNum", "label": "公会人数上限", "type": "number", "category": "功能", "min": 1, "max": 100, "step": 1, "desc": ""},
+    {"key": "GuildPlayerMaxNum", "label": "公会人数上限", "type": "number", "category": "功能", "min": 0, "max": 100, "step": 1, "desc": "0=禁止公会（玩家无法创建/加入公会）"},
     {"key": "bAllowGlobalPalboxExport", "label": "允许 Palbox 导出", "type": "bool", "category": "功能", "desc": "Global Palbox 跨服转移"},
     {"key": "bAllowGlobalPalboxImport", "label": "允许 Palbox 导入", "type": "bool", "category": "功能", "desc": "Global Palbox 跨服转移"},
     # 语音
@@ -149,13 +149,15 @@ def get_status():
 def get_memory():
     r = subprocess.run(
         ["systemctl", "show", SERVICE,
-         "--property=MemoryCurrent", "--property=MemoryPeak"],
+         "--property=MemoryCurrent", "--property=MemoryPeak", "--property=MemoryMax"],
         capture_output=True, text=True,
     )
     result = {}
     for line in r.stdout.splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
+            if v in ("infinity", "[not set]", ""):
+                continue
             try:
                 result[k] = int(v)
             except ValueError:
@@ -793,6 +795,110 @@ th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; lette
 .toast.ok { background: var(--accent); }
 .toast.err { background: var(--danger); }
 
+/* 首页美化 */
+.status-card {
+  background: linear-gradient(135deg, var(--card) 0%, var(--card-hover) 100%);
+  padding: 24px;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+  border-left: 4px solid var(--accent);
+}
+.status-card.inactive { border-left-color: var(--danger); }
+.status-card .status-icon {
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px;
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent);
+}
+.status-card.inactive .status-icon {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+.status-card .status-text { flex: 1; }
+.status-card .status-text .title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+.status-card .status-text .sub { font-size: 13px; color: var(--text-muted); }
+
+.metric-card {
+  background: var(--card);
+  padding: 18px;
+  border-radius: 12px;
+  box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+  border-left: 4px solid var(--primary);
+}
+.metric-card .metric-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+.metric-card .metric-icon { font-size: 16px; }
+.metric-card .metric-value { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
+.metric-card .progress {
+  height: 6px;
+  background: var(--bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.metric-card .progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--primary));
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+.metric-card .progress-fill.high { background: linear-gradient(90deg, var(--warning), var(--danger)); }
+.metric-card .metric-sub { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+
+.btn-icon { margin-right: 6px; }
+
+.player-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg);
+  margin-bottom: 8px;
+}
+.player-row:last-child { margin-bottom: 0; }
+.player-row .player-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+  flex-shrink: 0;
+}
+.player-row .player-name { flex: 1; font-weight: 600; }
+.player-row .player-steamid {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 12px; color: var(--text-muted);
+}
+.player-row .player-actions { display: flex; gap: 6px; }
+
+.logs .log-line { padding: 2px 0; }
+.logs .log-error { color: var(--danger); }
+.logs .log-warn { color: var(--warning); }
+.logs .log-connect, .logs .log-join { color: var(--accent); }
+.logs .log-disconnect, .logs .log-leave { color: var(--text-muted); }
+
+.panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+.panel-header h2 {
+  font-size: 15px; color: var(--primary); font-weight: 600;
+  display: flex; align-items: center; gap: 8px;
+}
+.panel-header .panel-sub { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+.panel-header .count-badge {
+  background: var(--primary); color: #fff;
+  padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600;
+}
+
 /* 配置管理页 */
 .config-layout {
   display: flex;
@@ -970,13 +1076,38 @@ async function refreshStatus() {
   try {
     const [st, mem] = await Promise.all([api("/api/status"), api("/api/memory")]);
     const active = st.active;
-    const badge = `<span class="badge ${active ? "active" : "inactive"}">${active ? "运行中" : "已停止"}</span>`;
-    document.getElementById("statusBadge2").innerHTML = badge;
-    document.getElementById("uptime").textContent = st.uptime || "-";
+    const card = document.getElementById("statusCard");
+    const icon = document.getElementById("statusIcon");
+    const title = document.getElementById("statusTitle");
+    const sub = document.getElementById("statusSub");
+    if (active) {
+      card.classList.remove("inactive");
+      icon.textContent = "✓";
+      title.textContent = "运行中";
+      sub.textContent = st.uptime ? "启动于 " + st.uptime : "运行中";
+    } else {
+      card.classList.add("inactive");
+      icon.textContent = "✕";
+      title.textContent = "已停止";
+      sub.textContent = "点击下方「启动」按钮运行服务器";
+    }
+
     const cur = mem.MemoryCurrent;
     const peak = mem.MemoryPeak;
+    const max = mem.MemoryMax;
     document.getElementById("mem").textContent = cur != null ? (cur/1073741824).toFixed(2) + " GB" : "-";
     document.getElementById("memPeak").textContent = peak != null ? (peak/1073741824).toFixed(2) + " GB" : "-";
+
+    if (max && max > 0 && cur != null) {
+      const pct = Math.min(100, (cur / max) * 100);
+      const bar = document.getElementById("memBar");
+      bar.style.width = pct.toFixed(1) + "%";
+      bar.classList.toggle("high", pct > 80);
+      document.getElementById("memSub").textContent = pct.toFixed(0) + "% / " + (max/1073741824).toFixed(1) + " GB 上限";
+    } else {
+      document.getElementById("memSub").textContent = "未设内存上限";
+    }
+
     document.getElementById("btnStart").disabled = active;
     document.getElementById("btnStop").disabled = !active;
     document.getElementById("btnRestart").disabled = !active;
@@ -987,24 +1118,42 @@ async function refreshStatus() {
 async function refreshPlayers() {
   try {
     const d = await api("/api/players");
-    const rows = d.players.map(p => `
-      <tr>
-        <td>${escapeHtml(p.name)}</td>
-        <td>${escapeHtml(p.steamid)}</td>
-        <td>
+    const count = d.players.length;
+    document.getElementById("playerCount").textContent = count;
+    if (count === 0) {
+      document.getElementById("playersList").innerHTML =
+        '<div style="text-align:center;color:var(--text-muted);padding:24px">无在线玩家</div>';
+      return;
+    }
+    const html = d.players.map(p => `
+      <div class="player-row">
+        <div class="player-dot"></div>
+        <div class="player-name">${escapeHtml(p.name)}</div>
+        <div class="player-steamid">${escapeHtml(p.steamid)}</div>
+        <div class="player-actions">
           <button class="btn btn-kick" onclick="kick('${escapeAttr(p.steamid)}')">踢出</button>
           <button class="btn btn-ban" onclick="ban('${escapeAttr(p.steamid)}')">封禁</button>
-        </td>
-      </tr>`).join("");
-    document.getElementById("playersBody").innerHTML = rows || `<tr><td colspan="3" style="text-align:center;color:var(--text-muted)">无在线玩家</td></tr>`;
+        </div>
+      </div>`).join("");
+    document.getElementById("playersList").innerHTML = html;
   } catch (e) { /* 忽略 */ }
 }
 
 async function refreshLogs() {
   try {
     const d = await api("/api/logs");
+    const raw = d.logs || "(无日志)";
+    const html = raw.split('\n').map(line => {
+      let cls = "";
+      if (/error|fail|exception|crash/i.test(line)) cls = "log-error";
+      else if (/warn/i.test(line)) cls = "log-warn";
+      else if (/connect/i.test(line)) cls = "log-connect";
+      else if (/join/i.test(line)) cls = "log-join";
+      else if (/disconnect|leave|exit/i.test(line)) cls = "log-leave";
+      return `<div class="log-line ${cls}">${escapeHtml(line)}</div>`;
+    }).join("");
     const l = document.getElementById("logs");
-    l.textContent = d.logs || "(无日志)";
+    l.innerHTML = html;
     l.scrollTop = l.scrollHeight;
   } catch (e) { /* 忽略 */ }
 }
@@ -1039,50 +1188,66 @@ function showDashboard() {
   if (timer) clearInterval(timer);
   document.getElementById("app").innerHTML = `
     <div class="topbar">
-      <h1>Palworld <span>管理面板</span></h1>
+      <h1>🎮 Palworld <span>管理面板</span></h1>
       <div class="tabs">
-        <button class="tab active" onclick="showDashboard()">仪表盘</button>
-        <button class="tab" onclick="showConfig()">配置管理</button>
+        <button class="tab active" onclick="showDashboard()">📊 仪表盘</button>
+        <button class="tab" onclick="showConfig()">⚙️ 配置管理</button>
       </div>
       <button class="btn btn-logout" onclick="logout()">退出</button>
     </div>
     <div class="container">
+      <div class="status-card" id="statusCard">
+        <div class="status-icon" id="statusIcon">·</div>
+        <div class="status-text">
+          <div class="title" id="statusTitle">加载中...</div>
+          <div class="sub" id="statusSub">-</div>
+        </div>
+      </div>
       <div class="cards">
-        <div class="card"><div class="label">服务状态</div><div class="value" id="statusBadge2"></div></div>
-        <div class="card"><div class="label">启动时间</div><div class="value" id="uptime" style="font-size:14px">-</div></div>
-        <div class="card"><div class="label">当前内存</div><div class="value" id="mem">-</div></div>
-        <div class="card"><div class="label">峰值内存</div><div class="value" id="memPeak">-</div></div>
-      </div>
-      <div class="panel">
-        <h2>服务控制</h2>
-        <div class="row">
-          <button class="btn btn-start" id="btnStart" onclick="action('/api/start','启动')">启动</button>
-          <button class="btn btn-stop" id="btnStop" onclick="action('/api/stop','停止')">停止</button>
-          <button class="btn btn-restart" id="btnRestart" onclick="action('/api/restart','重启')">重启</button>
-          <button class="btn btn-save" id="btnSave" onclick="action('/api/save','保存存档')">保存存档</button>
+        <div class="metric-card">
+          <div class="metric-head"><span class="metric-icon">💾</span>当前内存</div>
+          <div class="metric-value" id="mem">-</div>
+          <div class="progress"><div class="progress-fill" id="memBar" style="width:0%"></div></div>
+          <div class="metric-sub" id="memSub">-</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-head"><span class="metric-icon">📈</span>峰值内存</div>
+          <div class="metric-value" id="memPeak">-</div>
+          <div class="metric-sub" style="margin-top:14px">历史最高占用</div>
         </div>
       </div>
       <div class="panel">
-        <h2>广播消息</h2>
+        <div class="panel-header"><h2>🎛️ 服务控制</h2></div>
         <div class="row">
-          <input type="text" id="bcMsg" placeholder="输入广播内容">
-          <button class="btn btn-restart" onclick="broadcast()">发送</button>
+          <button class="btn btn-start" id="btnStart" onclick="action('/api/start','启动')"><span class="btn-icon">▶</span>启动</button>
+          <button class="btn btn-stop" id="btnStop" onclick="action('/api/stop','停止')"><span class="btn-icon">⏹</span>停止</button>
+          <button class="btn btn-restart" id="btnRestart" onclick="action('/api/restart','重启')"><span class="btn-icon">🔄</span>重启</button>
+          <button class="btn btn-save" id="btnSave" onclick="action('/api/save','保存存档')"><span class="btn-icon">💾</span>保存存档</button>
         </div>
       </div>
       <div class="panel">
-        <h2>在线玩家</h2>
-        <table>
-          <thead><tr><th>玩家名</th><th>SteamID</th><th>操作</th></tr></thead>
-          <tbody id="playersBody"></tbody>
-        </table>
+        <div class="panel-header"><h2>📢 广播消息</h2></div>
+        <div class="row">
+          <input type="text" id="bcMsg" placeholder="输入广播内容，游戏内全服可见">
+          <button class="btn btn-restart" onclick="broadcast()"><span class="btn-icon">📢</span>发送</button>
+        </div>
       </div>
       <div class="panel">
-        <h2>最近日志 <span style="font-size:11px;color:var(--text-muted);font-weight:400">(30 秒自动刷新)</span></h2>
+        <div class="panel-header">
+          <h2>👥 在线玩家</h2>
+          <span class="count-badge" id="playerCount">0</span>
+        </div>
+        <div id="playersList"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header">
+          <h2>📜 最近日志</h2>
+          <span class="panel-sub">30 秒自动刷新</span>
+        </div>
         <div class="logs" id="logs">加载中...</div>
       </div>
     </div>`;
 
-  // statusBadge2 在卡片里，refreshStatus 直接更新它
   refreshStatus();
   refreshPlayers();
   refreshLogs();
