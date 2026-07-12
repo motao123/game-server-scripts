@@ -29,6 +29,7 @@ type Server struct {
 	terminal  *terminal.Manager
 	scheduler *Scheduler
 	installs  *InstallManager
+	deploys   *DeployManager
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -42,6 +43,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	}
 	s.scheduler = NewScheduler(s)
 	s.installs = NewInstallManager()
+	s.deploys = NewDeployManager()
 	return s, nil
 }
 
@@ -116,7 +118,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/games", s.require(s.handleGames))
 	mux.HandleFunc("/api/game-deployment/status", s.require(s.handleDeploymentStatus))
 	mux.HandleFunc("/api/game-deployment/install", s.requirePost(s.handleDeploymentInstall))
-	mux.HandleFunc("/api/steamcmd/status", s.require(s.handleDeploymentStatus))
+	mux.HandleFunc("/api/steamcmd/status", s.require(s.handleSteamcmdStatus))
 	mux.HandleFunc("/api/files/list", s.require(s.handleFilesList))
 	mux.HandleFunc("/api/files/read", s.require(s.handleFilesRead))
 	mux.HandleFunc("/api/files/write", s.requirePost(s.handleFilesWrite))

@@ -38,7 +38,7 @@ func builtinGames() []GameTemplate {
 func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"games": builtinGames()})
 }
-func (s *Server) handleDeploymentStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSteamcmdStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"steamcmd": lookPath("steamcmd"), "templates": len(builtinGames())})
 }
 func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +48,9 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	var game *GameTemplate
-	for _, g := range builtinGames() {
-		if g.ID == body.GameID {
+	for i := range builtinGames() {
+		if builtinGames()[i].ID == body.GameID {
+			g := builtinGames()[i]
 			game = &g
 			break
 		}
@@ -62,12 +63,27 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 	if path == "" {
 		path = game.DefaultPath
 	}
+	task, err := s.deploys.Start(*game, path, s.instances)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
 	writeJSON(w, map[string]any{
 		"ok":      true,
-		"message": fmt.Sprintf("已创建 %s 部署任务，安装路径: %s", game.Name, path),
-		"game":    game,
+		"taskId":  task.ID,
+		"message": fmt.Sprintf("已启动 %s 部署任务", game.Name),
 		"path":    path,
 	})
+}
+
+func (s *Server) handleDeploymentStatus(w http.ResponseWriter, r *http.Request) {
+	taskID := r.URL.Query().Get("taskId")
+	task := s.deploys.Get(taskID)
+	if task == nil {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	writeJSON(w, task)
 }
 
 func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {

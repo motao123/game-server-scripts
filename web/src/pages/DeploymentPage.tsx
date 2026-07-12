@@ -1,37 +1,67 @@
-import { Button, Card, Col, Modal, Row, Tag, message } from 'antd'
-import { useEffect, useState } from 'react'
+import { Button, Card, Col, Modal, Progress, Row, Tag, message } from 'antd'
+import { useEffect, useRef, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
+type DeployState = {
+  taskId: string
+  gameName: string
+  status: 'running' | 'success' | 'failed'
+  output: string
+  error: string
+  instanceId?: string
+}
+
 export default function DeploymentPage() {
   const [games, setGames] = useState<any[]>([])
-  const [status, setStatus] = useState<any>({})
+  const [steamcmd, setSteamcmd] = useState<string>('')
   const [target, setTarget] = useState<any | null>(null)
+  const [deploy, setDeploy] = useState<DeployState | null>(null)
   const [loading, setLoading] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   async function load() {
-    const [g, s] = await Promise.all([api<{ games: any[] }>('/api/games'), api('/api/game-deployment/status')])
-    setGames(g.games || []); setStatus(s)
+    const [g, s] = await Promise.all([api<{ games: any[] }>('/api/games'), api<any>('/api/steamcmd/status')])
+    setGames(g.games || []); setSteamcmd(s.steamcmd || '')
   }
-  useEffect(() => { load() }, [])
-  async function confirm() {
+  useEffect(() => { load(); return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
+
+  async function startDeploy() {
     if (!target) return
     setLoading(true)
     try {
       const d = await api<any>('/api/game-deployment/install', { method: 'POST', body: { gameId: target.id } })
-      message.success(d.message || '部署任务已创建')
+      setDeploy({ taskId: d.taskId, gameName: target.name, status: 'running', output: '', error: '' })
       setTarget(null)
+      poll(d.taskId)
     } catch (e: any) {
       message.error(e.message)
     } finally {
       setLoading(false)
     }
   }
+
+  function poll(taskId: string) {
+    if (pollRef.current) clearInterval(pollRef.current)
+    pollRef.current = setInterval(async () => {
+      try {
+        const t = await api<any>(`/api/game-deployment/status?taskId=${taskId}`)
+        setDeploy(prev => prev ? { ...prev, status: t.status, output: t.output || '', error: t.error || '', instanceId: t.instanceId } : prev)
+        if (t.status === 'success' || t.status === 'failed') {
+          if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+          if (t.status === 'success') message.success('部署成功，已自动创建实例')
+          else message.error('部署失败：' + (t.error || '未知错误'))
+        }
+      } catch { /* ignore */ }
+    }, 1500)
+  }
+
   return (
     <>
-      <PageHeader title="游戏部署" desc="点击游戏卡片即可部署到默认路径" actions={<Button onClick={load}>刷新</Button>} />
+      <PageHeader title="游戏部署" desc="点击游戏卡片部署到默认路径，实时显示 SteamCMD 安装进度" actions={<Button onClick={load}>刷新</Button>} />
       <Card className="section-card">
         <span>SteamCMD: </span>
-        <Tag color={status.steamcmd ? 'green' : 'default'}>{status.steamcmd ? '已安装' : '未检测到'}</Tag>
+        <Tag color={steamcmd ? 'green' : 'red'}>{steamcmd ? '已安装' : '未安装（请先在环境管理安装）'}</Tag>
         <span style={{ marginLeft: 16 }}>共 {games.length} 个游戏模板</span>
       </Card>
       <Row gutter={[16, 16]}>
@@ -57,10 +87,11 @@ export default function DeploymentPage() {
           </Col>
         ))}
       </Row>
+
       <Modal
         title={target ? `部署 ${target.name}` : ''}
         open={!!target}
-        onOk={confirm}
+        onOk={startDeploy}
         onCancel={() => setTarget(null)}
         confirmLoading={loading}
         okText="开始部署"
@@ -73,12 +104,44 @@ export default function DeploymentPage() {
             <p style={{ color: '#999', fontSize: 12 }}>
               {target.appId ? `Steam AppID: ${target.appId}，` : ''}端口: {(target.ports || []).join(', ')}
             </p>
-            <p style={{ color: '#F2C037', fontSize: 12 }}>
-              注意：部署前请确保 SteamCMD 已安装。如未安装，可在「环境管理」页面获取安装命令。
-            </p>
+            {!steamcmd && target.appId ? (
+              <p style={{ color: '#C10015', fontSize: 12 }}>
+                ⚠ SteamCMD 未安装，部署会失败。请先在「环境管理」页面安装 SteamCMD。
+              </p>
+            ) : (
+              <p style={{ color: '#666', fontSize: 12 }}>
+                部署将通过 SteamCMD 下载游戏服务端，安装完成后自动创建实例。可在下方实时查看安装进度。
+              </p>
+            )}
           </div>
         )}
       </Modal>
+
+      {deploy && (
+        <Card title={`部署进度 - ${deploy.gameName}`} className="section-card" style={{ marginTop: 16 }}>
+          <div style={{ marginBottom: 12 }}>
+            {deploy.status === 'running' && <Progress percent={99} status="active" strokeColor="#1976D2" />}
+            {deploy.status === 'success' && <Progress percent={100} status="success" />}
+            {deploy.status === 'failed' && <Progress percent={100} status="exception" />}
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            状态:
+            {deploy.status === 'running' && <Tag color="processing" style={{ marginLeft: 8 }}>安装中...</Tag>}
+            {deploy.status === 'success' && <Tag color="success" style={{ marginLeft: 8 }}>成功</Tag>}
+            {deploy.status === 'failed' && <Tag color="error" style={{ marginLeft: 8 }}>失败</Tag>}
+            {deploy.instanceId && <Tag color="blue" style={{ marginLeft: 8 }}>实例: {deploy.instanceId.slice(0, 8)}</Tag>}
+          </div>
+          {deploy.status === 'failed' && deploy.error && (
+            <div style={{ marginBottom: 8, color: '#C10015' }}>
+              失败原因: {deploy.error}
+            </div>
+          )}
+          <pre className="console-box" style={{ maxHeight: 400 }}>{deploy.output || '等待输出...'}</pre>
+          {deploy.status !== 'running' && (
+            <Button onClick={() => setDeploy(null)} style={{ marginTop: 8 }}>关闭</Button>
+          )}
+        </Card>
+      )}
     </>
   )
 }
