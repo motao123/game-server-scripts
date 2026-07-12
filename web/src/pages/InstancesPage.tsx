@@ -160,17 +160,44 @@ function GameConfig({ instances }: { instances: any[] }) {
       <Select style={{ width: 260 }} placeholder="选择实例" value={instanceId || undefined} onChange={(v) => { setInstanceId(v); setTemplateId(''); setLoaded(null); form.resetFields() }} options={instances.map(i => ({ value: i.id, label: `${i.name} (${i.instanceType})` }))} />
       <Select style={{ width: 300 }} placeholder="选择配置模板" value={templateId || undefined} onChange={(v) => { setTemplateId(v); setLoaded(null); form.resetFields() }} options={availableTemplates.map(t => ({ value: t.id, label: t.name }))} />
       {loaded?.path && <Tag color="blue">{loaded.path}</Tag>}
+      {loaded?.template?.format && <Tag>{loaded.template.format}</Tag>}
     </Space>
     {loaded ? <Form form={form} layout="vertical">
-      {(loaded.template.fields || []).map((field: any) => <Form.Item key={field.key} name={field.key} label={field.label} extra={field.description}>
+      {(loaded.template.fields || []).map((field: any) => <Form.Item key={field.key} name={field.key} label={field.label} extra={field.description || fieldHint(field)} rules={fieldRules(field)}>
         {field.type === 'bool' ? <Select options={[{ value: 'true', label: 'true' }, { value: 'false', label: 'false' }]} /> :
           field.type === 'password' ? <Input.Password /> :
-          field.type === 'select' ? <Input /> :
-          field.type === 'number' ? <Input type="number" /> : <Input />}
+          field.type === 'select' ? <Select options={(field.options || []).map((o: any) => ({ value: o.value, label: o.label }))} /> :
+          field.type === 'number' ? <Input type="number" min={field.min} max={field.max} /> : <Input />}
       </Form.Item>)}
       <Button type="primary" onClick={saveConfig}>保存配置</Button>
     </Form> : <div style={{ color: '#999' }}>选择实例和模板后读取配置。未存在的配置文件会使用模板默认值。</div>}
   </Card>
+}
+
+function fieldRules(field: any) {
+  const rules: any[] = []
+  if (field.required) rules.push({ required: true, message: `${field.label}不能为空` })
+  if (field.type === 'number') {
+    rules.push({
+      validator: (_: any, value: string) => {
+        if (value === undefined || value === '') return Promise.resolve()
+        const n = Number(value)
+        if (Number.isNaN(n)) return Promise.reject(new Error(`${field.label}必须是数字`))
+        if (field.min !== undefined && field.min !== '' && n < Number(field.min)) return Promise.reject(new Error(`${field.label}不能小于 ${field.min}`))
+        if (field.max !== undefined && field.max !== '' && n > Number(field.max)) return Promise.reject(new Error(`${field.label}不能大于 ${field.max}`))
+        return Promise.resolve()
+      }
+    })
+  }
+  return rules
+}
+
+function fieldHint(field: any) {
+  const parts = []
+  if (field.min !== undefined && field.min !== '') parts.push(`最小 ${field.min}`)
+  if (field.max !== undefined && field.max !== '') parts.push(`最大 ${field.max}`)
+  if (field.options?.length) parts.push(`可选 ${field.options.map((o: any) => o.value).join(' / ')}`)
+  return parts.join('，')
 }
 
 function Whitelist({ whitelist, post }: { whitelist: any[]; post: (p: string, b: any, ok: string) => void }) {
