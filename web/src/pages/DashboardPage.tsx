@@ -32,23 +32,35 @@ export default function DashboardPage() {
   const [instances, setInstances] = useState<any[]>([])
   const [ports, setPorts] = useState('')
   const [processes, setProcesses] = useState('')
+  const [history, setHistory] = useState<any[]>([])
+  const [network, setNetwork] = useState<any[]>([])
   const [portSearch, setPortSearch] = useState('')
   const [procSearch, setProcSearch] = useState('')
 
   async function refresh() {
-    const [sys, inst, p, ps] = await Promise.all([
+    const [sys, inst, p, ps, h] = await Promise.all([
       api<SystemInfo>('/api/system/info'),
       api<{ instances: any[] }>('/api/instances'),
       api<{ raw: string }>('/api/system/ports'),
       api<{ raw: string }>('/api/system/processes'),
+      api<{ points: any[] }>('/api/system/history'),
     ])
     setInfo(sys); setInstances(inst.instances || []); setPorts(p.raw || ''); setProcesses(ps.raw || '')
+    setHistory(h.points || [])
   }
   useEffect(() => { refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id) }, [])
+
+  async function checkNetwork() {
+    try {
+      const d = await api<{ checks: any[] }>('/api/network/check')
+      setNetwork(d.checks || [])
+    } catch (e: any) { message.error(e.message) }
+  }
 
   const runningCount = instances.filter(i => i.status === 'running').length
   const portLines = ports.split('\n').filter(l => !portSearch || l.includes(portSearch))
   const procLines = processes.split('\n').filter(l => !procSearch || l.includes(procSearch)).slice(0, 30)
+  const latest = history[history.length - 1]
 
   return (
     <>
@@ -68,6 +80,27 @@ export default function DashboardPage() {
         <Col xs={24} md={12}>
           <Card title="磁盘详情" size="small">
             <Statistic title="已用 / 总量" value={`${formatBytes(info?.disk.used || 0)} / ${formatBytes(info?.disk.total || 0)}`} />
+          </Card>
+        </Col>
+      </Row>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} lg={12}>
+          <Card title="系统历史" size="small" extra={<Tag>{history.length} 个采样点</Tag>}>
+            <Row gutter={12}>
+              <Col span={8}><Statistic title="最近 CPU" value={latest?.cpuPercent || 0} precision={1} suffix="%" /></Col>
+              <Col span={8}><Statistic title="最近内存" value={latest?.memoryPercent || 0} precision={1} suffix="%" /></Col>
+              <Col span={8}><Statistic title="最近磁盘" value={latest?.diskPercent || 0} precision={1} suffix="%" /></Col>
+            </Row>
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title="网络检测" size="small" extra={<Button size="small" onClick={checkNetwork}>检测</Button>}>
+            {network.length === 0 ? <div style={{ color: '#999' }}>点击检测 Steam、PaperMC、Mojang、Modrinth、GitHub、Docker Hub 连通性。</div> : network.map(n => (
+              <div key={n.id} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #f0f0f0', padding: '4px 0' }}>
+                <span>{n.name}</span>
+                <span><Tag color={n.ok ? 'green' : 'red'}>{n.ok ? '可达' : '失败'}</Tag>{n.status || '-'} · {n.latencyMs}ms</span>
+              </div>
+            ))}
           </Card>
         </Col>
       </Row>

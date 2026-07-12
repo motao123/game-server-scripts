@@ -31,6 +31,7 @@ type Server struct {
 	installs  *InstallManager
 	deploys   *DeployManager
 	fileTasks *FileTaskManager
+	monitor   *Monitor
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -46,6 +47,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.installs = NewInstallManager()
 	s.deploys = NewDeployManager()
 	s.fileTasks = NewFileTaskManager()
+	s.monitor = NewMonitor()
 	return s, nil
 }
 
@@ -82,8 +84,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/csrf", s.require(s.handleCSRF))
 
 	mux.HandleFunc("/api/system/info", s.require(s.handleSystemInfo))
+	mux.HandleFunc("/api/system/history", s.require(s.handleSystemHistory))
 	mux.HandleFunc("/api/system/processes", s.require(s.handleProcesses))
 	mux.HandleFunc("/api/system/ports", s.require(s.handlePorts))
+	mux.HandleFunc("/api/network/check", s.require(s.handleNetworkCheck))
 	mux.HandleFunc("/api/sysinfo", s.require(s.handleSystemInfo))
 
 	mux.HandleFunc("/api/status", s.require(s.handlePalStatus))
@@ -241,6 +245,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, system.Snapshot())
+}
+func (s *Server) handleSystemHistory(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"points": s.monitor.History()})
+}
+func (s *Server) handleNetworkCheck(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"checks": CheckNetworkTargets()})
 }
 func (s *Server) handlePalStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.palworld.Status())
