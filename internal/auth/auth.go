@@ -30,6 +30,14 @@ func NewManager(password string) *Manager {
 	}
 }
 
+func (m *Manager) Password() string { return m.password }
+
+func (m *Manager) SetPassword(pw string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.password = pw
+}
+
 func (m *Manager) Login(ip, password string) (Session, bool, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

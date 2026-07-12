@@ -1,9 +1,8 @@
-import { Button, Card, Form, Input, List, Tabs, Tag, Upload, message, Modal, Table, Space } from 'antd'
+import { Button, Card, Form, Input, List, Tabs, Tag, Upload, message, Modal, Table, Space, Select } from 'antd'
 import { UploadOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
-
 export default function InstancesPage() {
   const [instances, setInstances] = useState<any[]>([])
   const [players, setPlayers] = useState<any[]>([])
@@ -33,11 +32,21 @@ export default function InstancesPage() {
 }
 
 function GenericInstances({ instances, post }: { instances: any[]; post: (p: string, b: any, ok: string) => void }) {
+  const [editModal, setEditModal] = useState<{ open: boolean; data: any }>({ open: false, data: null })
+  const [editForm] = Form.useForm()
   function delInstance(r: any) {
     Modal.confirm({
       title: '确认删除实例', content: `${r.name} (${r.id})`, okText: '删除', okType: 'danger', cancelText: '取消',
       onOk: () => post('/api/instances/delete', { id: r.id }, '已删除'),
     })
+  }
+  function openEdit(r: any) { editForm.setFieldsValue(r); setEditModal({ open: true, data: r }) }
+  async function saveEdit() {
+    try {
+      const v = await editForm.validateFields()
+      await api('/api/instances/update', { method: 'POST', body: { ...v, id: editModal.data.id } })
+      message.success('已更新'); setEditModal({ open: false, data: null })
+    } catch (e: any) { if (e.errorFields?.length) return; message.error(e.message) }
   }
   return <Card title="通用实例" extra={<span>支持自定义工作目录、启动命令、停止命令</span>}>
     <Form layout="inline" onFinish={(v) => post('/api/instances/create', { ...v, instanceType: 'generic' }, '已创建实例')}>
@@ -49,8 +58,17 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
     </Form>
     <Table rowKey="id" dataSource={instances} pagination={false} className="section-card" columns={[
       { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'error' ? 'red' : 'default'}>{s}</Tag> }, { title: '工作目录', dataIndex: 'workingDirectory' },
-      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => post('/api/instances/stop', { id: r.id }, '已停止')} disabled={r.status !== 'running'}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
+      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => post('/api/instances/stop', { id: r.id }, '已停止')} disabled={r.status !== 'running'}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
     ]} />
+    <Modal title="编辑实例" open={editModal.open} onOk={saveEdit} onCancel={() => setEditModal({ open: false, data: null })} okText="保存" cancelText="取消">
+      <Form form={editForm} layout="vertical">
+        <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input /></Form.Item>
+        <Form.Item name="workingDirectory" label="工作目录"><Input /></Form.Item>
+        <Form.Item name="startCommand" label="启动命令"><Input /></Form.Item>
+        <Form.Item name="stopCommand" label="停止命令"><Select options={[{value:'ctrl+c',label:'Ctrl+C'},{value:'stop',label:'stop'},{value:'exit',label:'exit'},{value:'quit',label:'quit'}]} /></Form.Item>
+        <Form.Item name="instanceType" label="类型"><Select options={[{value:'generic',label:'通用'},{value:'palworld',label:'Palworld'},{value:'minecraft-java',label:'Minecraft Java'},{value:'minecraft-bedrock',label:'Minecraft Bedrock'},{value:'valheim',label:'Valheim'},{value:'terraria',label:'Terraria'}]} /></Form.Item>
+      </Form>
+    </Modal>
   </Card>
 }
 

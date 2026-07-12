@@ -15,6 +15,7 @@ import RconPage from './pages/RconPage'
 import PluginsPage from './pages/PluginsPage'
 import SettingsPage from './pages/SettingsPage'
 import AboutPage from './pages/AboutPage'
+import BackupPage from './pages/BackupPage'
 
 const { Header, Sider, Content } = Layout
 
@@ -24,6 +25,7 @@ const menuItems = [
   { key: '/instances', label: '实例管理', icon: <CloudServerOutlined /> },
   { key: '/deployment', label: '游戏部署', icon: <DeploymentUnitOutlined /> },
   { key: '/files', label: '文件管理', icon: <FileTextOutlined /> },
+  { key: '/backup', label: '备份管理', icon: <DatabaseOutlined /> },
   { key: '/tasks', label: '计划任务', icon: <PlayCircleOutlined /> },
   { key: '/environment', label: '环境管理', icon: <ToolOutlined /> },
   { key: '/rcon', label: 'RCON', icon: <ControlOutlined /> },
@@ -60,6 +62,7 @@ export default function App() {
               <Route path="/instances" element={<InstancesPage />} />
               <Route path="/deployment" element={<DeploymentPage />} />
               <Route path="/files" element={<FilesPage />} />
+              <Route path="/backup" element={<BackupPage />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/environment" element={<EnvironmentPage />} />
               <Route path="/rcon" element={<RconPage />} />

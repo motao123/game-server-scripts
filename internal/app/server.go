@@ -139,6 +139,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/plugins", s.require(s.handlePlugins))
 	mux.HandleFunc("/api/plugins/toggle", s.requirePost(s.handlePluginToggle))
 	mux.HandleFunc("/api/settings", s.require(s.handleSettings))
+	mux.HandleFunc("/api/settings/password", s.requirePost(s.handleChangePassword))
 	mux.HandleFunc("/api/backup", s.require(s.handleBackupList))
 	mux.HandleFunc("/api/backup/create", s.requirePost(s.handleBackupCreate))
 	mux.HandleFunc("/api/backup/groups", s.require(s.handleBackupGroups))
