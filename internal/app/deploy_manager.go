@@ -86,13 +86,19 @@ func (m *DeployManager) Start(game GameTemplate, path string, instances *Instanc
 }
 
 func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, instances *InstanceStore, options DeployOptions) {
+	spec, err := ensureGameDeployable(game)
+	if err != nil {
+		task.appendOutput(err.Error() + "\n")
+		task.fail(err)
+		return
+	}
 	task.appendOutput(fmt.Sprintf("创建安装目录: %s\n", path))
 	if err := os.MkdirAll(path, 0755); err != nil {
 		task.appendOutput(fmt.Sprintf("创建目录失败: %v\n", err))
 		task.fail(err)
 		return
 	}
-	if game.ID == "palworld" {
+	if spec.RunAsSteam {
 		if err := ensureSystemUser("steam"); err != nil {
 			task.appendOutput(fmt.Sprintf("创建 steam 用户失败: %v\n", err))
 			task.fail(err)
@@ -177,9 +183,9 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 		task.fail(err)
 		return
 	}
-	if game.ID == "palworld" {
+	if spec.RunAsSteam {
 		if err := chownRecursive(path, "steam"); err != nil {
-			task.appendOutput(fmt.Sprintf("设置 Palworld 文件属主失败: %v\n", err))
+			task.appendOutput(fmt.Sprintf("设置服务端文件属主失败: %v\n", err))
 			task.fail(err)
 			return
 		}
@@ -198,17 +204,18 @@ func (m *DeployManager) createInstance(task *DeployTask, game GameTemplate, path
 		StopCommand:      "ctrl+c",
 	}
 	switch game.ID {
-	case "palworld":
-		inst.StartCommand = "runuser -u steam -- ./PalServer.sh"
-		inst.StopCommand = "stop"
 	case "minecraft-java":
 		inst.StartCommand = "./start.sh"
 		inst.StopCommand = "stop"
 	case "minecraft-bedrock":
 		inst.StartCommand = "./bedrock_server"
 		inst.StopCommand = "stop"
-	case "valheim", "terraria":
+	case "terraria":
 		inst.StartCommand = "./start_server.sh"
+	}
+	if cmd := startCommandForGame(game.ID); cmd != "" {
+		inst.StartCommand = cmd
+		inst.StopCommand = stopCommandForGame(game.ID, inst.StopCommand)
 	}
 	created, err := instances.Create(inst)
 	if err != nil {
@@ -222,14 +229,7 @@ func (m *DeployManager) createInstance(task *DeployTask, game GameTemplate, path
 }
 
 func validateDeployedGame(gameID, path string) error {
-	switch gameID {
-	case "palworld":
-		if fileExists(filepath.Join(path, "PalServer.sh")) || fileExists(filepath.Join(path, "PalServer-Linux-Test")) {
-			return nil
-		}
-		return fmt.Errorf("Palworld 服务端文件不完整，缺少 PalServer.sh 或 PalServer-Linux-Test")
-	}
-	return nil
+	return validateRuntimeSpec(gameID, path)
 }
 
 func fileExists(path string) bool {

@@ -35,6 +35,8 @@ type GameTemplate struct {
 	MemoryGB     int        `json:"memoryGB,omitempty"`
 	ServerTypes  []string   `json:"serverTypes,omitempty"`
 	Version      string     `json:"version,omitempty"`
+	Support      string     `json:"support,omitempty"`
+	SupportNote  string     `json:"supportNote,omitempty"`
 }
 
 type GamePort struct {
@@ -83,6 +85,10 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 	path := body.Path
 	if path == "" {
 		path = game.DefaultPath
+	}
+	if _, err := ensureGameDeployable(*game); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	task, err := s.deploys.Start(*game, path, s.instances, DeployOptions{ServerType: body.ServerType, Version: body.Version})
 	if err != nil {

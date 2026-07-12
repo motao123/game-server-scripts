@@ -90,4 +90,8 @@ func (g *GameTemplate) normalize() {
 	if g.DefaultPath == "" {
 		g.DefaultPath = filepath.Join("/home/steam/Steam/steamapps/common", g.ID)
 	}
+	if g.Type == "steam" {
+		spec := gameRuntimeSpec(g.ID)
+		g.Support, g.SupportNote = spec.status()
+	}
 }
