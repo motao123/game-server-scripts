@@ -1,14 +1,22 @@
-import { Button, Card, Empty, Form, Input, List, Modal, Space, Switch, Tag, message } from 'antd'
-import { DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { Button, Card, Empty, Form, Input, List, Modal, Space, Switch, Tabs, Tag, message } from 'antd'
+import { CloudDownloadOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
 export default function PluginsPage() {
   const [plugins, setPlugins] = useState<any[]>([])
+  const [catalog, setCatalog] = useState<any[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
-  async function load() { const d = await api<{ plugins: any[] }>('/api/plugins'); setPlugins(d.plugins || []) }
+  async function load() {
+    const [installed, market] = await Promise.all([
+      api<{ plugins: any[] }>('/api/plugins'),
+      api<{ plugins: any[] }>('/api/plugins/catalog'),
+    ])
+    setPlugins(installed.plugins || [])
+    setCatalog(market.plugins || [])
+  }
   useEffect(() => { load() }, [])
   async function toggle(id: string, enabled: boolean) {
     try { await api('/api/plugins/toggle', { method: 'POST', body: { id, enabled } }); message.success(enabled ? '已启用' : '已禁用'); load() } catch (e: any) { message.error(e.message) }
@@ -26,23 +34,43 @@ export default function PluginsPage() {
       onOk: async () => { await api('/api/plugins/delete', { method: 'POST', body: { name } }); message.success('已删除'); load() },
     })
   }
+  async function install(id: string) {
+    try { await api('/api/plugins/install', { method: 'POST', body: { id } }); message.success('已安装'); load() } catch (e: any) { message.error(e.message) }
+  }
+  function tags(items?: string[]) {
+    return (items || []).map(item => <Tag key={item}>{item}</Tag>)
+  }
   return (
     <>
-      <PageHeader title="插件" desc="扫描 data/plugins/*/plugin.json，仅管理元数据，不执行插件代码" actions={<Button icon={<PlusOutlined />} type="primary" onClick={() => setModalOpen(true)}>新建插件</Button>} />
+      <PageHeader title="插件" desc="插件元数据、启用状态和本地市场安装" actions={<Button icon={<PlusOutlined />} type="primary" onClick={() => setModalOpen(true)}>新建插件</Button>} />
       <Card>
-        {plugins.length === 0 ? <Empty description="未发现插件" /> : (
-          <List dataSource={plugins} renderItem={(p: any) => (
-            <List.Item actions={[
-              <Switch checked={p.enabled} onChange={(v) => toggle(p.id, v)} />,
-              <Button danger icon={<DeleteOutlined />} onClick={() => del(p.id)}>删除</Button>,
-            ]}>
-              <List.Item.Meta
-                title={<Space>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.enabled && <Tag color="green">启用</Tag>}</Space>}
-                description={`${p.description || '-'} · 作者: ${p.author || '-'} · ${p.path}`}
-              />
-            </List.Item>
-          )} />
-        )}
+        <Tabs items={[
+          { key: 'installed', label: '已安装', children: plugins.length === 0 ? <Empty description="未发现插件" /> : (
+            <List dataSource={plugins} renderItem={(p: any) => (
+              <List.Item actions={[
+                <Switch checked={p.enabled} onChange={(v) => toggle(p.id, v)} />,
+                <Button danger icon={<DeleteOutlined />} onClick={() => del(p.id)}>删除</Button>,
+              ]}>
+                <List.Item.Meta
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.enabled && <Tag color="green">启用</Tag>} {tags(p.tags)}</Space>}
+                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'} · {p.path}</span></Space>}
+                />
+              </List.Item>
+            )} />
+          ) },
+          { key: 'catalog', label: '插件市场', children: catalog.length === 0 ? <Empty description="未发现市场插件" /> : (
+            <List dataSource={catalog} renderItem={(p: any) => (
+              <List.Item actions={[
+                <Button type="primary" icon={<CloudDownloadOutlined />} disabled={p.installed} onClick={() => install(p.id)}>{p.installed ? '已安装' : '安装'}</Button>,
+              ]}>
+                <List.Item.Meta
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {tags(p.tags)} {tags(p.capabilities)}</Space>}
+                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'}</span></Space>}
+                />
+              </List.Item>
+            )} />
+          ) },
+        ]} />
       </Card>
       <Modal title="新建插件" open={modalOpen} onOk={create} onCancel={() => setModalOpen(false)} okText="创建" cancelText="取消">
         <Form form={form} layout="vertical">

@@ -31,6 +31,7 @@ RUN apt-get update \
 RUN mkdir -p /app /data /backups /home/steam/Steam/steamapps/common /usr/local/share/gsm-panel/data
 COPY --from=go-builder /out/gsm-panel /usr/local/bin/gsm-panel
 COPY data/game_catalog.json /usr/local/share/gsm-panel/data/game_catalog.json
+COPY data/plugin_catalog.json /usr/local/share/gsm-panel/data/plugin_catalog.json
 EXPOSE 8080 8211/udp 8212/tcp 25565/tcp 25575/tcp 2456/udp 2457/udp 7777/tcp 19132/udp
 VOLUME ["/data", "/home/steam/Steam/steamapps/common", "/backups"]
 WORKDIR /app

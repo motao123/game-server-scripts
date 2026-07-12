@@ -298,18 +298,27 @@ func (s *Server) handlePluginToggle(w http.ResponseWriter, r *http.Request) {
 		Enabled bool   `json:"enabled"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !validPluginID(body.ID) {
+		writeError(w, 400, "插件名称只允许字母数字下划线短横线")
+		return
+	}
 	dir := filepath.Join(s.cfg.DataDir, "plugins", body.ID)
+	if _, err := os.Stat(filepath.Join(dir, "plugin.json")); err != nil {
+		writeError(w, http.StatusNotFound, "插件未安装")
+		return
+	}
 	state := filepath.Join(dir, ".enabled")
 	var err error
 	if body.Enabled {
-		err = os.MkdirAll(dir, 0755)
-		if err == nil {
-			err = os.WriteFile(state, []byte("1"), 0644)
-		}
+		err = os.WriteFile(state, []byte("1"), 0644)
 	} else {
 		_ = os.Remove(state)
 	}
-	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 func (s *Server) handleEnvironmentInstall(w http.ResponseWriter, r *http.Request) {
 	var body struct {
