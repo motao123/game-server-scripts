@@ -9,16 +9,19 @@ import (
 )
 
 type ScheduledTask struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Cron      string `json:"cron"`
-	Action    string `json:"action"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
-	LastRun   string `json:"lastRun,omitempty"`
-	LastError string `json:"lastError,omitempty"`
-	NextRun   string `json:"nextRun,omitempty"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Cron             string `json:"cron"`
+	Action           string `json:"action"`
+	Enabled          bool   `json:"enabled"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt,omitempty"`
+	LastRun          string `json:"lastRun,omitempty"`
+	LastError        string `json:"lastError,omitempty"`
+	NextRun          string `json:"nextRun,omitempty"`
+	BackupSourcePath string `json:"backupSourcePath,omitempty"`
+	BackupName       string `json:"backupName,omitempty"`
+	MaxKeep          int    `json:"maxKeep,omitempty"`
 }
 
 type TaskStore struct {

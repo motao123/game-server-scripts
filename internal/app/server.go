@@ -20,22 +20,23 @@ import (
 )
 
 type Server struct {
-	cfg       config.Config
-	auth      *auth.Manager
-	palworld  palworld.Service
-	httpSrv   *http.Server
-	instances *InstanceStore
-	tasks     *TaskStore
-	terminal  *terminal.Manager
-	runtime   *InstanceRuntime
-	scheduler *Scheduler
-	installs  *InstallManager
-	deploys   *DeployManager
-	fileTasks *FileTaskManager
-	monitor   *Monitor
-	alerts    *AlertStore
-	plugins   *PluginManager
-	backups   *BackupManager
+	cfg         config.Config
+	auth        *auth.Manager
+	palworld    palworld.Service
+	httpSrv     *http.Server
+	instances   *InstanceStore
+	tasks       *TaskStore
+	terminal    *terminal.Manager
+	runtime     *InstanceRuntime
+	scheduler   *Scheduler
+	installs    *InstallManager
+	deploys     *DeployManager
+	fileTasks   *FileTaskManager
+	monitor     *Monitor
+	alerts      *AlertStore
+	plugins     *PluginManager
+	backups     *BackupManager
+	taskHistory *TaskHistoryStore
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -56,6 +57,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.alerts = NewAlertStore(filepath.Join(cfg.DataDir, "alert_rules.json"))
 	s.plugins = NewPluginManager(cfg.DataDir)
 	s.backups = NewBackupManager(cfg.BackupDir, s.safeRoot)
+	s.taskHistory = NewTaskHistoryStore(filepath.Join(cfg.DataDir, "task_history.json"))
 	return s, nil
 }
 
@@ -175,6 +177,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/scheduled-tasks/toggle", s.requirePost(s.handleTaskToggle))
 	mux.HandleFunc("/api/scheduled-tasks/run", s.requirePost(s.handleTaskRun))
 	mux.HandleFunc("/api/scheduled-tasks/delete", s.requirePost(s.handleTaskDelete))
+	mux.HandleFunc("/api/scheduled-tasks/history", s.require(s.handleTaskHistory))
 	mux.HandleFunc("/api/environment/info", s.require(s.handleEnvironment))
 	mux.HandleFunc("/api/environment/install", s.requirePost(s.handleEnvironmentInstall))
 	mux.HandleFunc("/api/environment/install/status", s.require(s.handleEnvironmentInstallStatus))

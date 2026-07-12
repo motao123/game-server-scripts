@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -47,7 +48,9 @@ func (s *Scheduler) RunTask(id string) {
 	if !ok {
 		return
 	}
-	err := s.run(task)
+	err := runWithHistory(s.app.taskHistory, id, func() error {
+		return s.run(task)
+	})
 	s.app.tasks.SetRunResult(id, err)
 	s.RefreshNextRun(id)
 	if err != nil {
@@ -79,6 +82,17 @@ func (s *Scheduler) run(t ScheduledTask) error {
 	}
 	switch parts[0] {
 	case "backup":
+		if t.BackupSourcePath != "" {
+			name := t.BackupName
+			if name == "" {
+				name = filepath.Base(t.BackupSourcePath)
+			}
+			_, err := s.app.backups.Create(name, t.BackupSourcePath, t.MaxKeep)
+			if err != nil {
+				return fmt.Errorf("备份失败: %w", err)
+			}
+			return nil
+		}
 		ok, msg := s.app.palworld.Backup()
 		if !ok {
 			return fmt.Errorf(msg)

@@ -99,6 +99,14 @@ func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"tasks": s.tasks.List()})
 }
+func (s *Server) handleTaskHistory(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeJSON(w, map[string]any{"history": map[string][]TaskHistoryEntry{}})
+		return
+	}
+	writeJSON(w, map[string]any{"history": s.taskHistory.Get(id)})
+}
 func (s *Server) handleEnvironment(w http.ResponseWriter, r *http.Request) {
 	java, _ := exec.LookPath("java")
 	steamcmd := lookPath("steamcmd")

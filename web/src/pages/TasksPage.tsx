@@ -1,4 +1,4 @@
-import { Button, Card, Form, Input, Modal, Select, Space, Switch, Table, Tag, message } from 'antd'
+import { Button, Card, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, message } from 'antd'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
@@ -13,6 +13,17 @@ type TaskForm = {
   instanceId?: string
   command?: string
   systemAction?: string
+  backupSourcePath?: string
+  backupName?: string
+  maxKeep?: number
+}
+
+type HistoryEntry = { time: string; success: boolean; error?: string; duration: string }
+
+function taskTypeLabel(action: string = ''): string {
+  const parts = action.split(/\s+/)
+  const map: Record<string, string> = { power: '实例开关', command: '发送命令', backup: '备份', system: '系统', shell: 'Shell' }
+  return map[parts[0]] || 'Shell'
 }
 
 export default function TasksPage() {
@@ -20,6 +31,7 @@ export default function TasksPage() {
   const [instances, setInstances] = useState<any[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<any>(null)
+  const [history, setHistory] = useState<Record<string, HistoryEntry[]>>({})
   const [form] = Form.useForm()
   const taskType = Form.useWatch('type', form)
 
@@ -27,13 +39,21 @@ export default function TasksPage() {
     const [t, i] = await Promise.all([api<{ tasks: any[] }>('/api/scheduled-tasks'), api<{ instances: any[] }>('/api/instances')])
     setTasks(t.tasks || [])
     setInstances(i.instances || [])
+    const hist: Record<string, HistoryEntry[]> = {}
+    await Promise.all((t.tasks || []).map(async (task) => {
+      try {
+        const d = await api<{ history: HistoryEntry[] }>(`/api/scheduled-tasks/history?id=${task.id}`)
+        if (d.history?.length) hist[task.id] = d.history
+      } catch {}
+    }))
+    setHistory(hist)
   }
   useEffect(() => { load() }, [])
 
   function openCreate() {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ type: 'shell', enabled: true, cron: '*/30 * * * *', action: 'shell date' })
+    form.setFieldsValue({ type: 'shell', enabled: true, cron: '*/30 * * * *', action: 'shell date', maxKeep: 5 })
     setModalOpen(true)
   }
 
@@ -47,12 +67,17 @@ export default function TasksPage() {
   async function submit() {
     try {
       const values = await form.validateFields()
-      const body = {
+      const body: any = {
         id: editing?.id,
         name: values.name,
         cron: values.cron,
         enabled: values.enabled !== false,
         action: buildAction(values),
+      }
+      if (values.type === 'backup' && values.backupSourcePath) {
+        body.backupSourcePath = values.backupSourcePath
+        body.backupName = values.backupName || ''
+        body.maxKeep = values.maxKeep || 0
       }
       await api('/api/scheduled-tasks/create', { method: 'POST', body })
       message.success(editing ? '已更新' : '已创建')
@@ -95,7 +120,7 @@ export default function TasksPage() {
     try {
       await api('/api/scheduled-tasks/run', { method: 'POST', body: { id: task.id } })
       message.success('任务已触发')
-      setTimeout(load, 800)
+      setTimeout(load, 1000)
     } catch (e: any) { message.error(e.message) }
   }
 
@@ -108,11 +133,12 @@ export default function TasksPage() {
 
   const columns = [
     { title: '名称', dataIndex: 'name' },
-    { title: '计划', dataIndex: 'cron' },
+    { title: '类型', key: 'type', width: 100, render: (_: any, r: any) => <Tag>{taskTypeLabel(r.action)}</Tag> },
+    { title: '计划', dataIndex: 'cron', width: 140 },
     { title: '动作', dataIndex: 'action', ellipsis: true },
     { title: '启用', dataIndex: 'enabled', width: 90, render: (v: boolean, r: any) => <Switch checked={v} onChange={(checked) => toggle(r, checked)} /> },
-    { title: '下次运行', dataIndex: 'nextRun', render: formatTime },
-    { title: '上次运行', dataIndex: 'lastRun', render: formatTime },
+    { title: '下次运行', dataIndex: 'nextRun', width: 160, render: formatTime },
+    { title: '上次运行', dataIndex: 'lastRun', width: 160, render: formatTime },
     { title: '错误', dataIndex: 'lastError', render: (v: string) => v ? <Tag color="red">{v}</Tag> : <Tag color="green">无</Tag> },
     { title: '操作', width: 170, render: (_: any, r: any) => (
       <Space size="small">
@@ -125,9 +151,32 @@ export default function TasksPage() {
 
   return (
     <>
-      <PageHeader title="计划任务" desc="支持编辑、启停、立即执行和运行时间记录" actions={<Space><Button onClick={load}>刷新</Button><Button type="primary" onClick={openCreate}>新建任务</Button></Space>} />
+      <PageHeader title="计划任务" desc="支持实例开关、命令、备份、系统和 Shell 任务，带执行历史" actions={<Space><Button onClick={load}>刷新</Button><Button type="primary" onClick={openCreate}>新建任务</Button></Space>} />
       <Card>
-        <Table rowKey="id" dataSource={tasks} columns={columns} pagination={false} />
+        <Table
+          rowKey="id"
+          dataSource={tasks}
+          columns={columns}
+          pagination={false}
+          expandable={{
+            expandedRowRender: (record: any) => {
+              const h = history[record.id] || []
+              if (!h.length) return <div style={{ color: '#999' }}>暂无执行历史</div>
+              return <Table
+                rowKey="time"
+                dataSource={h}
+                pagination={{ pageSize: 5 }}
+                size="small"
+                columns={[
+                  { title: '时间', dataIndex: 'time', width: 180, render: formatTime },
+                  { title: '结果', dataIndex: 'success', width: 100, render: (v: boolean) => v ? <Tag color="green">成功</Tag> : <Tag color="red">失败</Tag> },
+                  { title: '耗时', dataIndex: 'duration', width: 120 },
+                  { title: '错误', dataIndex: 'error' },
+                ]}
+              />
+            },
+          }}
+        />
       </Card>
       <Modal title={editing ? '编辑任务' : '新建任务'} open={modalOpen} onOk={submit} onCancel={() => setModalOpen(false)} width={640} okText="保存" cancelText="取消">
         <Form form={form} layout="vertical">
@@ -147,6 +196,11 @@ export default function TasksPage() {
           {(taskType === 'power' || taskType === 'command') && <Form.Item name="instanceId" label="实例" rules={[{ required: true }]}><Select options={instances.map(i => ({ value: i.id, label: i.name }))} /></Form.Item>}
           {taskType === 'power' && <Form.Item name="action" label="动作" rules={[{ required: true }]}><Select options={[{value:'start',label:'启动'},{value:'stop',label:'停止'},{value:'restart',label:'重启'}]} /></Form.Item>}
           {taskType === 'command' && <Form.Item name="command" label="命令内容" rules={[{ required: true }]}><Input /></Form.Item>}
+          {taskType === 'backup' && <>
+            <Form.Item name="backupSourcePath" label="备份源路径" rules={[{ required: true, message: '请输入备份源路径' }]}><Input placeholder="/home/steam/Steam/steamapps/common/PalServer" /></Form.Item>
+            <Form.Item name="backupName" label="备份组名称" extra="留空则使用源路径目录名"><Input placeholder="PalServer" /></Form.Item>
+            <Form.Item name="maxKeep" label="最大保留数" extra="超过此数量自动删除最旧备份，0 表示不限制"><InputNumber min={0} max={100} style={{ width: '100%' }} /></Form.Item>
+          </>}
           {taskType === 'system' && <Form.Item name="systemAction" label="系统动作" rules={[{ required: true }]}><Select options={[{value:'steam_update',label:'更新 Steam 游戏列表'}]} /></Form.Item>}
           {taskType === 'shell' && <Form.Item name="action" label="Shell 命令" rules={[{ required: true }]}><Input placeholder="shell date" /></Form.Item>}
           <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>
