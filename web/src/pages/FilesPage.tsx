@@ -13,8 +13,11 @@ export default function FilesPage() {
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
   const [search, setSearch] = useState('')
+  const [clipboard, setClipboard] = useState<{ path: string; op: 'copy' | 'move' } | null>(null)
   const [editFile, setEditFile] = useState<{ path: string; content: string; encoding?: any } | null>(null)
   const [editContent, setEditContent] = useState('')
+  const [permModal, setPermModal] = useState<{ open: boolean; path: string; mode: string }>({ open: false, path: '', mode: '' })
+  const [favorites, setFavorites] = useState<string[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function load(p?: string) {
@@ -25,7 +28,32 @@ export default function FilesPage() {
       setItems(d.items || [])
     } catch (e: any) { message.error(e.message) } finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load(); loadFavorites() }, [])
+  async function loadFavorites() { try { const d = await api<{ favorites: string[] }>('/api/files/favorites'); setFavorites(d.favorites || []) } catch {} }
+  async function toggleFav(p: string) {
+    if (favorites.includes(p)) await api('/api/files/favorites?path=' + encodeURIComponent(p), { method: 'DELETE' })
+    else await api('/api/files/favorites', { method: 'POST', body: { path: p } })
+    loadFavorites()
+  }
+  async function paste() {
+    if (!clipboard) return
+    const name = clipboard.path.split('/').pop()
+    const dst = path + '/' + name
+    try {
+      if (clipboard.op === 'copy') await api('/api/files/copy', { method: 'POST', body: { src: clipboard.path, dst } })
+      else await api('/api/files/move', { method: 'POST', body: { src: clipboard.path, dst } })
+      message.success(clipboard.op === 'copy' ? '已复制' : '已移动')
+      setClipboard(null); load()
+    } catch (e: any) { message.error(e.message) }
+  }
+  async function showPermissions(item: FileItem) {
+    try { const d = await api<{ mode: string }>(`/api/files/permissions?path=${encodeURIComponent(item.path)}`); setPermModal({ open: true, path: item.path, mode: d.mode }) }
+    catch (e: any) { message.error(e.message) }
+  }
+  async function savePermissions() {
+    try { await api('/api/files/permissions', { method: 'POST', body: { path: permModal.path, mode: permModal.mode } }); message.success('已保存'); setPermModal({ open: false, path: '', mode: '' }) }
+    catch (e: any) { message.error(e.message) }
+  }
 
   const filtered = items.filter(i => !search || i.name.toLowerCase().includes(search.toLowerCase()))
   const dirs = filtered.filter(i => i.isDir).sort((a, b) => a.name.localeCompare(b.name))
@@ -153,9 +181,13 @@ export default function FilesPage() {
     { title: '大小', dataIndex: 'size', width: 100, render: (s: number, r: FileItem) => r.isDir ? '-' : `${(s / 1024).toFixed(1)} KB` },
     { title: '修改时间', dataIndex: 'modTime', width: 180, render: (t: string) => t ? new Date(t).toLocaleString('zh-CN') : '-' },
     {
-      title: '操作', width: 120, render: (_: any, record: FileItem) => (
-        <Space size="small">
+      title: '操作', width: 280, render: (_: any, record: FileItem) => (
+        <Space size="small" wrap>
           <Button size="small" type="link" onClick={() => open(record)}>{record.isDir ? '打开' : '编辑'}</Button>
+          <Button size="small" type="link" onClick={() => setClipboard({ path: record.path, op: 'copy' })}>复制</Button>
+          <Button size="small" type="link" onClick={() => setClipboard({ path: record.path, op: 'move' })}>剪切</Button>
+          <Button size="small" type="link" onClick={() => toggleFav(record.path)}>{favorites.includes(record.path) ? '★' : '☆'}</Button>
+          <Button size="small" type="link" onClick={() => showPermissions(record)}>权限</Button>
           <Button size="small" type="link" onClick={() => del(record.path)} danger>删除</Button>
         </Space>
       ),
@@ -167,6 +199,7 @@ export default function FilesPage() {
       <PageHeader title="文件管理" desc="受限根目录浏览/编辑/上传/下载/压缩解压" actions={
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
+          {clipboard && <Button onClick={paste}>粘贴 {clipboard.op === 'copy' ? '(复制)' : '(移动)'}</Button>}
           <Button icon={<FolderAddOutlined />} onClick={mkdir}>新建文件夹</Button>
           <Button icon={<FileAddOutlined />} onClick={mkfile}>新建文件</Button>
           <Button icon={<UploadOutlined />} onClick={() => fileInputRef.current?.click()}>上传</Button>
@@ -232,6 +265,10 @@ export default function FilesPage() {
             </div>
           </>
         )}
+      </Modal>
+      <Modal title="文件权限" open={permModal.open} onOk={savePermissions} onCancel={() => setPermModal({ open: false, path: '', mode: '' })} okText="保存" cancelText="取消">
+        <p>{permModal.path}</p>
+        <Input value={permModal.mode} onChange={e => setPermModal({ ...permModal, mode: e.target.value })} placeholder="如 755 或 0644" />
       </Modal>
     </>
   )
