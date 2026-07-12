@@ -23,12 +23,14 @@ type GameTemplate struct {
 	Tags        []string `json:"tags"`
 	DefaultPath string   `json:"defaultPath"`
 	AppID       int      `json:"appId,omitempty"`
+	ServerTypes []string `json:"serverTypes,omitempty"`
+	Version     string   `json:"version,omitempty"`
 }
 
 func builtinGames() []GameTemplate {
 	return []GameTemplate{
 		{ID: "palworld", Name: "Palworld", Type: "steam", Description: "幻兽帕鲁专用服务器", Ports: []int{8211, 27015, 25575}, Tags: []string{"SteamCMD", "RCON", "REST API"}, DefaultPath: "/home/steam/Steam/steamapps/common/PalServer", AppID: 2394010},
-		{ID: "minecraft-java", Name: "Minecraft Java", Type: "minecraft-java", Description: "Java 版服务端", Ports: []int{25565}, Tags: []string{"Java", "Paper", "Forge"}, DefaultPath: "/home/steam/minecraft-java"},
+		{ID: "minecraft-java", Name: "Minecraft Java", Type: "minecraft-java", Description: "Java 版服务端", Ports: []int{25565}, Tags: []string{"Java", "Paper", "Forge", "Fabric", "Vanilla"}, DefaultPath: "/home/steam/minecraft-java", ServerTypes: []string{"paper", "vanilla", "fabric", "forge", "spigot"}, Version: "latest"},
 		{ID: "minecraft-bedrock", Name: "Minecraft Bedrock", Type: "minecraft-bedrock", Description: "基岩版服务端", Ports: []int{19132}, Tags: []string{"Bedrock"}, DefaultPath: "/home/steam/minecraft-bedrock"},
 		{ID: "valheim", Name: "Valheim", Type: "steam", Description: "英灵神殿专用服务器", Ports: []int{2456, 2457, 2458}, Tags: []string{"SteamCMD"}, DefaultPath: "/home/steam/Steam/steamapps/common/Valheim", AppID: 896660},
 		{ID: "terraria", Name: "Terraria", Type: "steam", Description: "泰拉瑞亚服务端", Ports: []int{7777}, Tags: []string{"SteamCMD"}, DefaultPath: "/home/steam/Steam/steamapps/common/Terraria", AppID: 105600},
@@ -43,8 +45,10 @@ func (s *Server) handleSteamcmdStatus(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		GameID string `json:"gameId"`
-		Path   string `json:"path"`
+		GameID     string `json:"gameId"`
+		Path       string `json:"path"`
+		ServerType string `json:"serverType"`
+		Version    string `json:"version"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	var game *GameTemplate
@@ -63,7 +67,7 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 	if path == "" {
 		path = game.DefaultPath
 	}
-	task, err := s.deploys.Start(*game, path, s.instances)
+	task, err := s.deploys.Start(*game, path, s.instances, DeployOptions{ServerType: body.ServerType, Version: body.Version})
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return

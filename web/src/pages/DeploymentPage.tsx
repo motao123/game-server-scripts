@@ -1,4 +1,4 @@
-import { Button, Card, Col, Modal, Progress, Row, Tag, message } from 'antd'
+import { Button, Card, Col, Input, Modal, Progress, Row, Select, Space, Tag, message } from 'antd'
 import { useEffect, useRef, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
@@ -18,6 +18,9 @@ export default function DeploymentPage() {
   const [target, setTarget] = useState<any | null>(null)
   const [deploy, setDeploy] = useState<DeployState | null>(null)
   const [loading, setLoading] = useState(false)
+  const [deployPath, setDeployPath] = useState('')
+  const [serverType, setServerType] = useState('')
+  const [version, setVersion] = useState('')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function load() {
@@ -26,11 +29,18 @@ export default function DeploymentPage() {
   }
   useEffect(() => { load(); return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
 
+  function openDeploy(game: any) {
+    setTarget(game)
+    setDeployPath(game.defaultPath || '')
+    setServerType(game.serverTypes?.[0] || '')
+    setVersion(game.version || '')
+  }
+
   async function startDeploy() {
     if (!target) return
     setLoading(true)
     try {
-      const d = await api<any>('/api/game-deployment/install', { method: 'POST', body: { gameId: target.id } })
+      const d = await api<any>('/api/game-deployment/install', { method: 'POST', body: { gameId: target.id, path: deployPath, serverType, version } })
       setDeploy({ taskId: d.taskId, gameName: target.name, status: 'running', output: '', error: '' })
       setTarget(null)
       poll(d.taskId)
@@ -70,7 +80,7 @@ export default function DeploymentPage() {
             <Card
               title={<span>{game.name} <Tag color="blue">{game.id}</Tag></span>}
               hoverable
-              onClick={() => setTarget(game)}
+              onClick={() => openDeploy(game)}
               style={{ height: '100%' }}
             >
               <p style={{ color: '#666', minHeight: 44 }}>{game.description}</p>
@@ -82,7 +92,7 @@ export default function DeploymentPage() {
                 <div>默认路径: {game.defaultPath}</div>
                 {game.appId ? <div>Steam AppID: {game.appId}</div> : null}
               </div>
-              <Button type="primary" block style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); setTarget(game) }}>部署</Button>
+              <Button type="primary" block style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); openDeploy(game) }}>部署</Button>
             </Card>
           </Col>
         ))}
@@ -99,14 +109,22 @@ export default function DeploymentPage() {
       >
         {target && (
           <div>
-            <p>将部署 <b>{target.name}</b> 到以下默认路径：</p>
-            <p style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, fontFamily: 'monospace' }}>{target.defaultPath}</p>
+            <p>将部署 <b>{target.name}</b> 到以下路径：</p>
+            <Input value={deployPath} onChange={e => setDeployPath(e.target.value)} style={{ marginBottom: 12 }} />
+            {target.id === 'minecraft-java' && <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
+              <Select value={serverType} onChange={setServerType} options={(target.serverTypes || []).map((t: string) => ({ value: t, label: t }))} />
+              <Input value={version} onChange={e => setVersion(e.target.value)} placeholder="Minecraft 版本，如 1.21.4" />
+            </Space>}
             <p style={{ color: '#999', fontSize: 12 }}>
               {target.appId ? `Steam AppID: ${target.appId}，` : ''}端口: {(target.ports || []).join(', ')}
             </p>
             {!steamcmd && target.appId ? (
               <p style={{ color: '#C10015', fontSize: 12 }}>
                 ⚠ SteamCMD 未安装，部署会失败。请先在「环境管理」页面安装 SteamCMD。
+              </p>
+            ) : target.id === 'minecraft-java' ? (
+              <p style={{ color: '#666', fontSize: 12 }}>
+                Minecraft Java 会下载所选服务端到 server.jar，写入 eula.txt，并自动创建可启动实例。
               </p>
             ) : (
               <p style={{ color: '#666', fontSize: 12 }}>
