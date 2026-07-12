@@ -77,6 +77,23 @@ cd web && npm install && npm run build   # 产物输出到 internal/app/frontend
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o gsm-panel ./cmd/gsm-panel
 ```
 
+生成发布包：
+
+```bash
+chmod +x scripts/release-build.sh
+VERSION=v0.1.0 ./scripts/release-build.sh
+cat dist/SHA256SUMS
+```
+
+Windows PowerShell：
+
+```powershell
+.\scripts\release-build.ps1 -Version v0.1.0
+Get-Content dist\SHA256SUMS
+```
+
+推送 `v*` 标签后，GitHub Actions 会自动构建 Linux amd64/arm64 发布包、生成 `SHA256SUMS`，并发布 GitHub Release；同时构建并推送 GHCR 多架构 Docker 镜像。
+
 ## Docker 部署
 
 ```bash

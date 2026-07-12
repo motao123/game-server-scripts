@@ -5,3 +5,4 @@ gsm-panel.exe
 .claude/
 *.log
 *.tsbuildinfo
+dist/
