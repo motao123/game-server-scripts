@@ -18,6 +18,9 @@ type PluginCatalogItem struct {
 	Entry            string            `json:"entry,omitempty"`
 	Tags             []string          `json:"tags,omitempty"`
 	Capabilities     []string          `json:"capabilities,omitempty"`
+	Permissions      []string          `json:"permissions,omitempty"`
+	Risk             string            `json:"risk,omitempty"`
+	RiskText         string            `json:"riskText,omitempty"`
 	MinPanelVersion  string            `json:"minPanelVersion,omitempty"`
 	MaxPanelVersion  string            `json:"maxPanelVersion,omitempty"`
 	Source           PluginSource      `json:"source,omitempty"`
@@ -45,6 +48,7 @@ func (s *Server) pluginCatalog() []PluginCatalogItem {
 	for i := range catalog {
 		plugin, ok := installed[catalog[i].ID]
 		catalog[i].Installed = ok
+		catalog[i].Risk, catalog[i].RiskText = pluginPermissionRisk(catalog[i].Permissions)
 		catalog[i].Compatible, catalog[i].Compatibility = pluginCompatibility(catalog[i])
 		if ok {
 			catalog[i].InstalledVersion = plugin.Version
@@ -64,8 +68,10 @@ func (s *Server) pluginsWithCatalog() []PluginMeta {
 	for i := range plugins {
 		item, ok := catalog[plugins[i].ID]
 		plugins[i].Compatible = true
+		plugins[i].Risk, plugins[i].RiskText = pluginPermissionRisk(plugins[i].Permissions)
 		if ok {
 			plugins[i].MarketVersion = item.Version
+			plugins[i].Risk, plugins[i].RiskText = pluginPermissionRisk(item.Permissions)
 			plugins[i].Compatible, plugins[i].Compatibility = pluginCompatibility(item)
 			plugins[i].Upgradable = plugins[i].Compatible && compareVersions(item.Version, plugins[i].Version) > 0
 		}
@@ -108,6 +114,8 @@ func normalizePluginCatalog(items []PluginCatalogItem) []PluginCatalogItem {
 		if item.Version == "" {
 			item.Version = "1.0.0"
 		}
+		item.Permissions = normalizePluginPermissions(item.Permissions)
+		item.Risk, item.RiskText = pluginPermissionRisk(item.Permissions)
 		out = append(out, item)
 	}
 	return out
@@ -124,6 +132,7 @@ func defaultPluginCatalog() []PluginCatalogItem {
 			Author:       "game-server-scripts",
 			Tags:         []string{"运维", "备注"},
 			Capabilities: []string{"config"},
+			Permissions:  []string{"config"},
 		},
 		{
 			ID:           "maintenance-checklist",
@@ -134,6 +143,7 @@ func defaultPluginCatalog() []PluginCatalogItem {
 			Author:       "game-server-scripts",
 			Tags:         []string{"维护", "清单"},
 			Capabilities: []string{"config"},
+			Permissions:  []string{"config"},
 		},
 	}
 }

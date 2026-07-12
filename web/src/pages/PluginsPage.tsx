@@ -43,6 +43,10 @@ export default function PluginsPage() {
   function tags(items?: string[]) {
     return (items || []).map(item => <Tag key={item}>{item}</Tag>)
   }
+  function riskTag(p: any) {
+    const color = p.risk === 'high' ? 'red' : p.risk === 'medium' ? 'orange' : 'green'
+    return <Tag color={color}>{p.riskText || '低风险'}</Tag>
+  }
   return (
     <>
       <PageHeader title="插件" desc="插件元数据、启用状态和本地市场安装" actions={<Button icon={<PlusOutlined />} type="primary" onClick={() => setModalOpen(true)}>新建插件</Button>} />
@@ -56,8 +60,8 @@ export default function PluginsPage() {
                 <Button danger icon={<DeleteOutlined />} onClick={() => del(p.id)}>删除</Button>,
               ].filter(Boolean)}>
                 <List.Item.Meta
-                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.marketVersion && <Tag color={p.upgradable ? 'orange' : 'blue'}>市场 {p.marketVersion}</Tag>} {p.enabled && <Tag color="green">启用</Tag>} {p.upgradable && <Tag color="orange">可升级</Tag>} {!p.compatible && <Tag color="red">不兼容</Tag>} {tags(p.tags)}</Space>}
-                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'} · {p.path}</span></Space>}
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.marketVersion && <Tag color={p.upgradable ? 'orange' : 'blue'}>市场 {p.marketVersion}</Tag>} {p.enabled && <Tag color="green">启用</Tag>} {p.upgradable && <Tag color="orange">可升级</Tag>} {!p.compatible && <Tag color="red">不兼容</Tag>} {riskTag(p)} {tags(p.tags)}</Space>}
+                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'} · 权限: {(p.permissions || []).join(', ') || '无'} · {p.path}</span></Space>}
                 />
               </List.Item>
             )} />
@@ -68,8 +72,8 @@ export default function PluginsPage() {
                 <Button type="primary" icon={<CloudDownloadOutlined />} disabled={p.installed || p.compatible === false} onClick={() => install(p.id)}>{p.installed ? '已安装' : p.compatible === false ? '不兼容' : '安装'}</Button>,
               ]}>
                 <List.Item.Meta
-                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.installedVersion && <Tag color="blue">已装 {p.installedVersion}</Tag>} {p.upgradable && <Tag color="orange">可升级</Tag>} {p.source?.url && <Tag color="purple">远程包</Tag>} {p.compatible === false && <Tag color="red">不兼容</Tag>} {tags(p.tags)} {tags(p.capabilities)}</Space>}
-                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'}{p.compatibility ? ` · ${p.compatibility}` : ''}</span></Space>}
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.installedVersion && <Tag color="blue">已装 {p.installedVersion}</Tag>} {p.upgradable && <Tag color="orange">可升级</Tag>} {p.source?.url && <Tag color="purple">远程包</Tag>} {p.compatible === false && <Tag color="red">不兼容</Tag>} {riskTag(p)} {tags(p.tags)} {tags(p.capabilities)}</Space>}
+                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'} · 权限: {(p.permissions || []).join(', ') || '无'}{p.compatibility ? ` · ${p.compatibility}` : ''}</span></Space>}
                 />
               </List.Item>
             )} />

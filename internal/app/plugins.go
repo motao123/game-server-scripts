@@ -18,6 +18,9 @@ type PluginMeta struct {
 	Entry         string   `json:"entry,omitempty"`
 	Tags          []string `json:"tags,omitempty"`
 	Capabilities  []string `json:"capabilities,omitempty"`
+	Permissions   []string `json:"permissions,omitempty"`
+	Risk          string   `json:"risk,omitempty"`
+	RiskText      string   `json:"riskText,omitempty"`
 	Enabled       bool     `json:"enabled"`
 	Path          string   `json:"path"`
 	MarketVersion string   `json:"marketVersion,omitempty"`

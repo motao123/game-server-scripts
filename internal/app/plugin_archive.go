@@ -16,6 +16,9 @@ import (
 const panelVersion = "0.1.0"
 
 func (s *Server) installPluginFromCatalog(item PluginCatalogItem) (PluginMeta, error) {
+	if err := validatePluginPermissions(item.Permissions); err != nil {
+		return PluginMeta{}, err
+	}
 	compatible, reason := pluginCompatibility(item)
 	if !compatible {
 		return PluginMeta{}, fmt.Errorf(reason)
@@ -183,6 +186,16 @@ func (s *Server) installPluginArchive(item PluginCatalogItem, dir string) (Plugi
 	if len(meta.Capabilities) == 0 {
 		meta.Capabilities = item.Capabilities
 	}
+	if len(meta.Permissions) == 0 {
+		meta.Permissions = item.Permissions
+	}
+	meta.Permissions = normalizePluginPermissions(meta.Permissions)
+	if err := validatePluginPermissions(meta.Permissions); err != nil {
+		return PluginMeta{}, err
+	}
+	if err := validatePluginPackagePermissions(item, meta); err != nil {
+		return PluginMeta{}, err
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		return PluginMeta{}, err
 	}
@@ -200,7 +213,7 @@ func (s *Server) installPluginArchive(item PluginCatalogItem, dir string) (Plugi
 }
 
 func pluginMetaFromCatalog(item PluginCatalogItem) PluginMeta {
-	return PluginMeta{ID: item.ID, Name: item.Name, DisplayName: item.DisplayName, Version: item.Version, Description: item.Description, Author: item.Author, Homepage: item.Homepage, Entry: item.Entry, Tags: item.Tags, Capabilities: item.Capabilities}
+	return PluginMeta{ID: item.ID, Name: item.Name, DisplayName: item.DisplayName, Version: item.Version, Description: item.Description, Author: item.Author, Homepage: item.Homepage, Entry: item.Entry, Tags: item.Tags, Capabilities: item.Capabilities, Permissions: item.Permissions}
 }
 
 func readPluginMeta(dir string) (PluginMeta, error) {
@@ -272,6 +285,9 @@ func pluginFileMode(name string) os.FileMode {
 }
 
 func pluginCompatibility(item PluginCatalogItem) (bool, string) {
+	if err := validatePluginPermissions(item.Permissions); err != nil {
+		return false, err.Error()
+	}
 	if item.MinPanelVersion != "" && compareVersions(panelVersion, item.MinPanelVersion) < 0 {
 		return false, "需要面板版本 >= " + item.MinPanelVersion
 	}
@@ -279,6 +295,76 @@ func pluginCompatibility(item PluginCatalogItem) (bool, string) {
 		return false, "需要面板版本 <= " + item.MaxPanelVersion
 	}
 	return true, ""
+}
+
+func validatePluginPackagePermissions(item PluginCatalogItem, meta PluginMeta) error {
+	allowed := map[string]bool{}
+	for _, permission := range normalizePluginPermissions(item.Permissions) {
+		allowed[permission] = true
+	}
+	for _, permission := range meta.Permissions {
+		if !allowed[permission] {
+			return fmt.Errorf("插件包声明了市场未授权权限: %s", permission)
+		}
+	}
+	return nil
+}
+
+func normalizePluginPermissions(permissions []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, permission := range permissions {
+		permission = strings.TrimSpace(strings.ToLower(permission))
+		if permission == "" || seen[permission] {
+			continue
+		}
+		seen[permission] = true
+		out = append(out, permission)
+	}
+	return out
+}
+
+func validatePluginPermissions(permissions []string) error {
+	allowed := map[string]bool{"config": true, "files": true, "instances": true, "rcon": true, "commands": true, "network": true, "terminal": true, "system": true}
+	for _, permission := range permissions {
+		if !allowed[permission] {
+			return fmt.Errorf("未知插件权限: %s", permission)
+		}
+	}
+	return nil
+}
+
+func pluginPermissionRisk(permissions []string) (string, string) {
+	level := 0
+	labels := map[string]string{"config": "配置", "files": "文件", "instances": "实例", "rcon": "RCON", "commands": "命令", "network": "网络", "terminal": "终端", "system": "系统"}
+	high := map[string]bool{"commands": true, "terminal": true, "system": true}
+	medium := map[string]bool{"files": true, "instances": true, "rcon": true, "network": true}
+	names := []string{}
+	for _, permission := range normalizePluginPermissions(permissions) {
+		if high[permission] {
+			level = 3
+		} else if medium[permission] && level < 2 {
+			level = 2
+		} else if level < 1 {
+			level = 1
+		}
+		if label := labels[permission]; label != "" {
+			names = append(names, label)
+		} else {
+			names = append(names, permission)
+		}
+	}
+	if len(names) == 0 {
+		return "low", "无敏感权限"
+	}
+	switch level {
+	case 3:
+		return "high", "高风险权限: " + strings.Join(names, "、")
+	case 2:
+		return "medium", "中风险权限: " + strings.Join(names, "、")
+	default:
+		return "low", "低风险权限: " + strings.Join(names, "、")
+	}
 }
 
 func compareVersions(a, b string) int {
