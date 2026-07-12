@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type FileTask struct {
@@ -23,6 +25,7 @@ type FileTask struct {
 	Error     string `json:"error,omitempty"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
+	CanCancel bool   `json:"canCancel"`
 }
 
 type FileTaskManager struct {
@@ -44,12 +47,10 @@ func NewFileTaskManager() *FileTaskManager {
 
 func (m *FileTaskManager) Add(taskType, name string, fn func(update func(int, string)) error) FileTask {
 	now := time.Now().Format(time.RFC3339)
-	task := FileTask{ID: time.Now().Format("20060102150405.000000000"), Type: taskType, Name: name, Status: "queued", CreatedAt: now, UpdatedAt: now}
+	task := FileTask{ID: uuid.NewString(), Type: taskType, Name: name, Status: "queued", CreatedAt: now, UpdatedAt: now, CanCancel: true}
 	m.mu.Lock()
 	m.tasks = append([]FileTask{task}, m.tasks...)
-	if len(m.tasks) > 100 {
-		m.tasks = m.tasks[:100]
-	}
+	m.trimLocked()
 	m.mu.Unlock()
 	m.queue <- fileTaskWork{id: task.ID, fn: fn}
 	return task
@@ -63,8 +64,51 @@ func (m *FileTaskManager) List() []FileTask {
 	return out
 }
 
+func (m *FileTaskManager) Get(id string) (FileTask, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, task := range m.tasks {
+		if task.ID == id {
+			return task, true
+		}
+	}
+	return FileTask{}, false
+}
+
+func (m *FileTaskManager) Cancel(id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.tasks {
+		task := &m.tasks[i]
+		if task.ID != id {
+			continue
+		}
+		if task.Status != "queued" {
+			return fmt.Errorf("任务已开始执行，不能安全取消")
+		}
+		task.Status = "cancelled"
+		task.CanCancel = false
+		task.Progress = 0
+		task.Message = "已取消，未执行文件操作"
+		task.UpdatedAt = time.Now().Format(time.RFC3339)
+		return nil
+	}
+	return fmt.Errorf("文件任务不存在")
+}
+
+func (m *FileTaskManager) trimLocked() {
+	if len(m.tasks) <= 100 {
+		return
+	}
+	m.tasks = m.tasks[:100]
+}
+
 func (m *FileTaskManager) run() {
 	for work := range m.queue {
+		task, ok := m.Get(work.id)
+		if !ok || task.Status == "cancelled" {
+			continue
+		}
 		m.update(work.id, "running", 1, "", "")
 		err := work.fn(func(progress int, message string) { m.update(work.id, "running", progress, message, "") })
 		if err != nil {
@@ -81,6 +125,7 @@ func (m *FileTaskManager) update(id, status string, progress int, message, errTe
 	for i := range m.tasks {
 		if m.tasks[i].ID == id {
 			m.tasks[i].Status = status
+			m.tasks[i].CanCancel = status == "queued"
 			m.tasks[i].Progress = progress
 			m.tasks[i].Message = message
 			m.tasks[i].Error = errText
@@ -92,6 +137,27 @@ func (m *FileTaskManager) update(id, status string, progress int, message, errTe
 
 func (s *Server) handleFileTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"tasks": s.fileTasks.List()})
+}
+
+func (s *Server) handleFileTaskDetail(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.fileTasks.Get(r.URL.Query().Get("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "文件任务不存在")
+		return
+	}
+	writeJSON(w, map[string]any{"task": task})
+}
+
+func (s *Server) handleFileTaskCancel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := s.fileTasks.Cancel(body.ID); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 func (s *Server) handleFilesUploadChunk(w http.ResponseWriter, r *http.Request) {

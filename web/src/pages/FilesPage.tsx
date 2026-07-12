@@ -6,7 +6,7 @@ import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
 type FileItem = { name: string; path: string; isDir: boolean; size: number; modTime: string }
-type FileTask = { id: string; type: string; name: string; status: string; progress: number; message?: string; error?: string; updatedAt: string }
+type FileTask = { id: string; type: string; name: string; status: string; progress: number; message?: string; error?: string; updatedAt: string; createdAt: string; canCancel?: boolean }
 type SearchItem = { name: string; path: string; isDir: boolean; size: number }
 
 export default function FilesPage() {
@@ -42,6 +42,17 @@ export default function FilesPage() {
   }, [])
   async function loadFavorites() { try { const d = await api<{ favorites: string[] }>('/api/files/favorites'); setFavorites(d.favorites || []) } catch {} }
   async function loadTasks() { try { const d = await api<{ tasks: FileTask[] }>('/api/files/tasks'); setTasks(d.tasks || []) } catch {} }
+  async function cancelTask(task: FileTask) {
+    try { await api('/api/files/tasks/cancel', { method: 'POST', body: { id: task.id } }); message.success('已取消排队任务'); loadTasks() }
+    catch (e: any) { message.error(e.message) }
+  }
+  async function showTask(task: FileTask) {
+    try {
+      const d = await api<{ task: FileTask }>(`/api/files/tasks/detail?id=${encodeURIComponent(task.id)}`)
+      const detail = d.task
+      Modal.info({ title: `文件任务：${taskLabel(detail.type)}`, content: <div><div>名称：{detail.name}</div><div>状态：{statusLabel(detail.status)}</div><div>进度：{detail.progress}%</div><div>创建时间：{new Date(detail.createdAt).toLocaleString('zh-CN')}</div><div>更新时间：{new Date(detail.updatedAt).toLocaleString('zh-CN')}</div>{detail.message && <div>信息：{detail.message}</div>}{detail.error && <div style={{ color: '#cf1322' }}>错误：{detail.error}</div>}</div>, okText: '关闭' })
+    } catch (e: any) { message.error(e.message) }
+  }
   async function toggleFav(p: string) {
     if (favorites.includes(p)) await api('/api/files/favorites?path=' + encodeURIComponent(p), { method: 'DELETE' })
     else await api('/api/files/favorites', { method: 'POST', body: { path: p } })
@@ -283,10 +294,11 @@ export default function FilesPage() {
         {tasks.slice(0, 8).map(t => <div key={t.id} style={{ marginBottom: 12 }}>
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <span>{taskLabel(t.type)}：{t.name}</span>
-            <Tag color={t.status === 'done' ? 'green' : t.status === 'error' ? 'red' : t.status === 'running' ? 'blue' : 'default'}>{statusLabel(t.status)}</Tag>
+            <Space><Tag color={t.status === 'done' ? 'green' : t.status === 'error' ? 'red' : t.status === 'running' ? 'blue' : t.status === 'cancelled' ? 'default' : 'orange'}>{statusLabel(t.status)}</Tag><Button size="small" type="link" onClick={() => showTask(t)}>详情</Button>{t.canCancel && <Button size="small" type="link" danger onClick={() => cancelTask(t)}>取消</Button>}</Space>
           </Space>
-          <Progress percent={t.progress || 0} size="small" status={t.status === 'error' ? 'exception' : t.status === 'done' ? 'success' : 'active'} />
+          <Progress percent={t.progress || 0} size="small" status={t.status === 'error' ? 'exception' : t.status === 'done' ? 'success' : t.status === 'cancelled' ? 'normal' : 'active'} />
           {(t.error || t.message) && <div style={{ color: t.error ? '#cf1322' : '#666' }}>{t.error || t.message}</div>}
+          {t.status === 'running' && <div style={{ color: '#666', fontSize: 12 }}>运行中的文件操作不可安全中断，完成后可查看详情。</div>}
         </div>)}
       </Card>}
       <Card>
@@ -377,6 +389,6 @@ function taskLabel(type: string): string {
 }
 
 function statusLabel(status: string): string {
-  const map: Record<string, string> = { queued: '排队中', running: '执行中', done: '完成', error: '失败' }
+  const map: Record<string, string> = { queued: '排队中', running: '执行中', done: '完成', error: '失败', cancelled: '已取消' }
   return map[status] || status
 }
