@@ -1,0 +1,35 @@
+services:
+  gsm-panel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: game-server-scripts/gsm-panel:latest
+    container_name: gsm-panel
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    ports:
+      - "8080:8080"
+      - "8211:8211/udp"
+      - "8212:8212/tcp"
+      - "25565:25565/tcp"
+      - "25575:25575/tcp"
+      - "2456:2456/udp"
+      - "2457:2457/udp"
+      - "7777:7777/tcp"
+      - "19132:19132/udp"
+    volumes:
+      - ./docker_data:/data
+      - ./game_file:/home/steam/Steam/steamapps/common
+      - ./backups:/backups
+    environment:
+      TZ: Asia/Shanghai
+      WEB_BIND: 0.0.0.0
+      WEB_PORT: 8080
+      WEB_PASSWORD: ${WEB_PASSWORD:-change-me-now}
+      JWT_SECRET: ${JWT_SECRET:-change-this-jwt-secret}
+      GSM_DATA_DIR: /data
+      BACKUP_DIR: /backups
+      PAL_SERVER_DIR: /home/steam/Steam/steamapps/common/PalServer
+      SAVE_GAMES_DIR: /home/steam/Steam/steamapps/common/PalServer/Pal/Saved/SaveGames
+      PAL_SETTINGS: /home/steam/Steam/steamapps/common/PalServer/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini

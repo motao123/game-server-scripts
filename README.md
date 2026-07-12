@@ -76,6 +76,27 @@ cd web && npm install && npm run build   # 产物输出到 internal/app/frontend
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o gsm-panel ./cmd/gsm-panel
 ```
 
+## Docker 部署
+
+```bash
+export WEB_PASSWORD='请改成强密码'
+export JWT_SECRET='请改成长随机字符串'
+docker compose up -d --build
+```
+
+默认访问 `http://服务器IP:8080`。容器会挂载：
+
+- `./docker_data`：面板数据、实例、任务、告警规则
+- `./game_file`：游戏服务端文件
+- `./backups`：备份文件
+
+多架构镜像构建：
+
+```bash
+chmod +x scripts/docker-buildx.sh
+IMAGE=your-registry/gsm-panel:latest PUSH=true ./scripts/docker-buildx.sh
+```
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |

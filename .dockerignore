@@ -1,0 +1,14 @@
+.git
+.trae
+node_modules
+web/node_modules
+web/dist
+dist
+build
+docker_data
+game_file
+backups
+*.log
+conversation-*.txt
+gsm-panel
+coverage
