@@ -62,6 +62,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	log.Printf("GSM Panel listening on %s", addr)
 	s.scheduler.Start()
+	go s.AutoStartInstances()
 	defer s.scheduler.Stop()
 	if err := s.httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
@@ -116,6 +117,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/instances/start", s.requirePost(s.handleInstanceAction("start")))
 	mux.HandleFunc("/api/instances/stop", s.requirePost(s.handleInstanceAction("stop")))
 	mux.HandleFunc("/api/instances/restart", s.requirePost(s.handleInstanceAction("restart")))
+	mux.HandleFunc("/api/instances/input", s.requirePost(s.handleInstanceInput))
+	mux.HandleFunc("/api/instances/status", s.require(s.handleInstanceStatus))
+	mux.HandleFunc("/api/instances/logs", s.require(s.handleInstanceLogs))
 	mux.HandleFunc("/api/games", s.require(s.handleGames))
 	mux.HandleFunc("/api/game-deployment/status", s.require(s.handleDeploymentStatus))
 	mux.HandleFunc("/api/game-deployment/install", s.requirePost(s.handleDeploymentInstall))

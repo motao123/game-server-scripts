@@ -34,6 +34,8 @@ export default function InstancesPage() {
 function GenericInstances({ instances, post }: { instances: any[]; post: (p: string, b: any, ok: string) => void }) {
   const [editModal, setEditModal] = useState<{ open: boolean; data: any }>({ open: false, data: null })
   const [editForm] = Form.useForm()
+  const [logModal, setLogModal] = useState<{ open: boolean; id: string; logs: string }>({ open: false, id: '', logs: '' })
+  const [stopping, setStopping] = useState<string>('')
   function delInstance(r: any) {
     Modal.confirm({
       title: '确认删除实例', content: `${r.name} (${r.id})`, okText: '删除', okType: 'danger', cancelText: '取消',
@@ -41,6 +43,15 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
     })
   }
   function openEdit(r: any) { editForm.setFieldsValue(r); setEditModal({ open: true, data: r }) }
+  async function viewLogs(r: any) {
+    try { const d = await api<{ logs: string }>(`/api/instances/logs?id=${r.id}`); setLogModal({ open: true, id: r.id, logs: d.logs || '(无日志)' }) }
+    catch (e: any) { message.error(e.message) }
+  }
+  async function stopInstance(r: any) {
+    setStopping(r.id)
+    try { await api('/api/instances/stop', { method: 'POST', body: { id: r.id } }); message.success('已停止') } catch (e: any) { message.error(e.message) }
+    finally { setStopping('') }
+  }
   async function saveEdit() {
     try {
       const v = await editForm.validateFields()
@@ -57,8 +68,8 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
       <Button htmlType="submit" type="primary">创建</Button>
     </Form>
     <Table rowKey="id" dataSource={instances} pagination={false} className="section-card" columns={[
-      { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'error' ? 'red' : 'default'}>{s}</Tag> }, { title: '工作目录', dataIndex: 'workingDirectory' },
-      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => post('/api/instances/stop', { id: r.id }, '已停止')} disabled={r.status !== 'running'}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
+      { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'error' ? 'red' : 'default'}>{s}</Tag> }, { title: 'PID', dataIndex: 'pid', width: 80, render: (p: number) => p || '-' },
+      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => stopInstance(r)} disabled={r.status !== 'running'} loading={stopping === r.id}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button onClick={() => viewLogs(r)} disabled={r.status !== 'running' && !r.lastStarted}>日志</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
     ]} />
     <Modal title="编辑实例" open={editModal.open} onOk={saveEdit} onCancel={() => setEditModal({ open: false, data: null })} okText="保存" cancelText="取消">
       <Form form={editForm} layout="vertical">
@@ -68,6 +79,9 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
         <Form.Item name="stopCommand" label="停止命令"><Select options={[{value:'ctrl+c',label:'Ctrl+C'},{value:'stop',label:'stop'},{value:'exit',label:'exit'},{value:'quit',label:'quit'}]} /></Form.Item>
         <Form.Item name="instanceType" label="类型"><Select options={[{value:'generic',label:'通用'},{value:'palworld',label:'Palworld'},{value:'minecraft-java',label:'Minecraft Java'},{value:'minecraft-bedrock',label:'Minecraft Bedrock'},{value:'valheim',label:'Valheim'},{value:'terraria',label:'Terraria'}]} /></Form.Item>
       </Form>
+    </Modal>
+    <Modal title="实例日志" open={logModal.open} onOk={() => setLogModal({ open: false, id: '', logs: '' })} onCancel={() => setLogModal({ open: false, id: '', logs: '' })} okText="关闭" cancelText="取消" width={800}>
+      <pre className="log-box" style={{ maxHeight: 400 }}>{logModal.logs}</pre>
     </Modal>
   </Card>
 }

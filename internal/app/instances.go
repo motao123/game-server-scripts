@@ -18,6 +18,10 @@ type Instance struct {
 	Status           string `json:"status"`
 	InstanceType     string `json:"instanceType"`
 	CreatedAt        string `json:"createdAt"`
+	PID              int    `json:"pid,omitempty"`
+	TerminalSession  string `json:"terminalSessionId,omitempty"`
+	LastStarted      string `json:"lastStarted,omitempty"`
+	LastStopped      string `json:"lastStopped,omitempty"`
 }
 
 type InstanceStore struct {

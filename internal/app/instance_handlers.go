@@ -2,9 +2,20 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
+	"sync"
+	"time"
+)
+
+// 运行中的实例进程追踪
+var (
+	runningProcs   = map[string]*exec.Cmd{}
+	runningStdins  = map[string]func(string) error{}
+	runningProcsMu sync.Mutex
 )
 
 func (s *Server) handleInstanceCreate(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +46,8 @@ func (s *Server) handleInstanceDelete(w http.ResponseWriter, r *http.Request) {
 		ID string `json:"id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	// 先停止运行中的实例
+	s.stopInstanceByID(body.ID)
 	err := s.instances.Delete(body.ID)
 	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
 }
@@ -57,9 +70,49 @@ func (s *Server) handleInstanceAction(action string) http.HandlerFunc {
 			s.instanceStop(w, r, inst)
 		case "restart":
 			s.instanceStop(w, r, inst)
+			time.Sleep(2 * time.Second)
+			inst, _ = s.instances.Get(body.ID)
 			s.instanceStart(w, r, inst)
 		}
 	}
+}
+
+func (s *Server) handleInstanceInput(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID   string `json:"id"`
+		Data string `json:"data"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	runningProcsMu.Lock()
+	writer := runningStdins[body.ID]
+	runningProcsMu.Unlock()
+	if writer == nil {
+		writeError(w, http.StatusBadRequest, "实例未运行或无标准输入")
+		return
+	}
+	err := writer(body.Data)
+	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+}
+
+func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	inst, ok := s.instances.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "实例不存在")
+		return
+	}
+	writeJSON(w, map[string]any{"status": inst.Status, "pid": inst.PID, "lastStarted": inst.LastStarted, "lastStopped": inst.LastStopped})
+}
+
+func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	logFile := fmt.Sprintf("data/instances/%s.log", id)
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		writeJSON(w, map[string]any{"logs": ""})
+		return
+	}
+	writeJSON(w, map[string]any{"logs": string(data)})
 }
 
 func (s *Server) instanceStart(w http.ResponseWriter, r *http.Request, inst Instance) {
@@ -86,16 +139,67 @@ func (s *Server) instanceStart(w http.ResponseWriter, r *http.Request, inst Inst
 		return
 	}
 	s.instances.SetStatus(inst.ID, "starting")
-	// 通过终端 PTY 启动，让实例输出可被终端管理器捕获
-	// 这里简化处理：直接用 shell 执行，真实 GSM 会创建 PTY 会话
-	out, err := runInstanceCommand(inst, cmd)
+
+	// 用后台进程启动，保存 PID，输出写入日志文件
+	c := exec.Command("sh", "-lc", cmd)
+	c.Dir = inst.WorkingDirectory
+	logFile := fmt.Sprintf("data/instances/%s.log", inst.ID)
+	_ = os.MkdirAll("data/instances", 0755)
+	f, err := os.Create(logFile)
 	if err != nil {
 		s.instances.SetStatus(inst.ID, "error")
-		writeJSON(w, map[string]any{"ok": false, "output": string(out), "error": errString(err)})
+		writeError(w, 500, "无法创建日志文件: "+err.Error())
 		return
 	}
-	s.instances.SetStatus(inst.ID, "running")
-	writeJSON(w, map[string]any{"ok": true, "output": string(out)})
+	c.Stdout = f
+	c.Stderr = f
+	c.Stdin = nil
+	setSysProcAttr(c)
+	stdin, err := c.StdinPipe()
+	if err != nil {
+		f.Close()
+		s.instances.SetStatus(inst.ID, "error")
+		writeError(w, 500, "无法创建 stdin pipe: "+err.Error())
+		return
+	}
+
+	if err := c.Start(); err != nil {
+		f.Close()
+		s.instances.SetStatus(inst.ID, "error")
+		writeError(w, 500, "启动失败: "+err.Error())
+		return
+	}
+
+	runningProcsMu.Lock()
+	runningProcs[inst.ID] = c
+	runningStdins[inst.ID] = func(data string) error { _, err := stdin.Write([]byte(data)); return err }
+	runningProcsMu.Unlock()
+
+	s.instances.SetFields(inst.ID, map[string]any{
+		"status":          "running",
+		"pid":             c.Process.Pid,
+		"lastStarted":     time.Now().Format(time.RFC3339),
+		"terminalSession": "",
+	})
+
+	// 后台等待进程退出
+	go func() {
+		_ = c.Wait()
+		f.Close()
+		runningProcsMu.Lock()
+		delete(runningProcs, inst.ID)
+		runningProcsMu.Unlock()
+		cur, ok := s.instances.Get(inst.ID)
+		if ok && cur.Status != "stopped" {
+			s.instances.SetFields(inst.ID, map[string]any{
+				"status":      "stopped",
+				"pid":         0,
+				"lastStopped": time.Now().Format(time.RFC3339),
+			})
+		}
+	}()
+
+	writeJSON(w, map[string]any{"ok": true, "pid": c.Process.Pid, "logFile": logFile})
 }
 
 func (s *Server) instanceStop(w http.ResponseWriter, r *http.Request, inst Instance) {
@@ -104,27 +208,83 @@ func (s *Server) instanceStop(w http.ResponseWriter, r *http.Request, inst Insta
 		return
 	}
 	s.instances.SetStatus(inst.ID, "stopping")
-	// GSM 逻辑：按 stopCommand 注入到实例终端，而不是直接 kill
-	// 这里简化处理：如果有终端会话，写入停止命令；否则直接 kill 进程
-	stopCmd := inst.StopCommand
-	if stopCmd == "" {
-		stopCmd = "ctrl+c"
+
+	runningProcsMu.Lock()
+	cmd := runningProcs[inst.ID]
+	runningProcsMu.Unlock()
+
+	if cmd != nil && cmd.Process != nil {
+		// 先尝试向进程组发 SIGINT（模拟 ctrl+c）
+		stopProcess(cmd)
+		// 等 10 秒，超时强制 kill
+		done := make(chan struct{})
+		go func() {
+			_ = cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			killProcess(cmd)
+		}
+		runningProcsMu.Lock()
+		delete(runningProcs, inst.ID)
+		delete(runningStdins, inst.ID)
+		runningProcsMu.Unlock()
 	}
-	var input string
-	switch stopCmd {
-	case "ctrl+c":
-		input = ""
-	case "stop":
-		input = "stop\r"
-	case "exit":
-		input = "exit\r"
-	case "quit":
-		input = "quit\r"
-	default:
-		input = stopCmd + "\r"
+
+	s.instances.SetFields(inst.ID, map[string]any{
+		"status":      "stopped",
+		"pid":         0,
+		"lastStopped": time.Now().Format(time.RFC3339),
+	})
+	writeJSON(w, map[string]any{"ok": true, "message": "已停止"})
+}
+
+func (s *Server) stopInstanceByID(id string) {
+	inst, ok := s.instances.Get(id)
+	if !ok || inst.Status != "running" {
+		return
 	}
-	_ = input
-	// 简化：直接标记 stopped，真实实现需要通过终端会话注入
-	s.instances.SetStatus(inst.ID, "stopped")
-	writeJSON(w, map[string]any{"ok": true, "message": "停止命令已发送"})
+	s.instanceStop(nil, nil, inst)
+}
+
+// AutoStartInstances 在服务启动时自动启动标记了 AutoStart 的实例
+func (s *Server) AutoStartInstances() {
+	for _, inst := range s.instances.List() {
+		if inst.AutoStart && inst.Status != "running" {
+			go s.instanceStart(nil, nil, inst)
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+// SetFields 批量设置实例字段
+func (s *InstanceStore) SetFields(id string, fields map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.list {
+		if s.list[i].ID != id {
+			continue
+		}
+		if v, ok := fields["status"]; ok {
+			s.list[i].Status = fmt.Sprint(v)
+		}
+		if v, ok := fields["pid"]; ok {
+			if n, ok := v.(int); ok {
+				s.list[i].PID = n
+			}
+		}
+		if v, ok := fields["terminalSession"]; ok {
+			s.list[i].TerminalSession = fmt.Sprint(v)
+		}
+		if v, ok := fields["lastStarted"]; ok {
+			s.list[i].LastStarted = fmt.Sprint(v)
+		}
+		if v, ok := fields["lastStopped"]; ok {
+			s.list[i].LastStopped = fmt.Sprint(v)
+		}
+		break
+	}
+	_ = s.saveLocked()
 }
