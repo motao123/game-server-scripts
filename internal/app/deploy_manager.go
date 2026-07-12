@@ -175,7 +175,7 @@ func (m *DeployManager) createInstance(task *DeployTask, game GameTemplate, path
 	}
 	switch game.ID {
 	case "palworld":
-		inst.StartCommand = "systemctl start pal-server"
+		inst.StartCommand = "./PalServer.sh"
 		inst.StopCommand = "stop"
 	case "minecraft-java":
 		inst.StartCommand = "./start.sh"

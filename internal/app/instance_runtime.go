@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,9 @@ func (r *InstanceRuntime) Start(inst Instance) (InstanceStartResult, error) {
 	}
 	if strings.TrimSpace(cmd) == "" {
 		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: "启动命令为空"}
+	}
+	if svc, ok := systemctlStartService(cmd); ok {
+		return r.startSystemd(inst, svc)
 	}
 	r.store.SetStatus(inst.ID, "starting")
 
@@ -105,6 +110,15 @@ func (r *InstanceRuntime) Start(inst Instance) (InstanceStartResult, error) {
 }
 
 func (r *InstanceRuntime) Stop(inst Instance) string {
+	if svc, ok := instanceSystemdService(inst); ok {
+		_ = runSystemctl("stop", svc)
+		r.store.SetFields(inst.ID, map[string]any{
+			"status":      "stopped",
+			"pid":         0,
+			"lastStopped": time.Now().Format(time.RFC3339),
+		})
+		return "已停止"
+	}
 	if inst.Status == "stopped" {
 		return "已停止"
 	}
@@ -161,6 +175,66 @@ func (r *InstanceRuntime) Logs(id string, tail bool) string {
 		return tailLines(logs, 300)
 	}
 	return logs
+}
+
+func (r *InstanceRuntime) startSystemd(inst Instance, service string) (InstanceStartResult, error) {
+	r.store.SetStatus(inst.ID, "starting")
+	if err := runSystemctl("start", service); err != nil {
+		r.store.SetStatus(inst.ID, "error")
+		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: err.Error()}
+	}
+	if !systemdActive(service) {
+		r.store.SetStatus(inst.ID, "error")
+		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: fmt.Sprintf("systemd 服务 %s 未处于 active 状态", service)}
+	}
+	r.store.SetFields(inst.ID, map[string]any{
+		"status":          "running",
+		"pid":             0,
+		"lastStarted":     time.Now().Format(time.RFC3339),
+		"terminalSession": "",
+	})
+	return InstanceStartResult{LogFile: fmt.Sprintf("journalctl -u %s", service)}, nil
+}
+
+func instanceSystemdService(inst Instance) (string, bool) {
+	return systemctlStartService(inst.StartCommand)
+}
+
+func systemctlStartService(command string) (string, bool) {
+	fields := strings.Fields(command)
+	if len(fields) != 3 || fields[0] != "systemctl" || fields[1] != "start" {
+		return "", false
+	}
+	service := strings.TrimSpace(fields[2])
+	if service == "" || strings.ContainsAny(service, `/\;&|$<>`) {
+		return "", false
+	}
+	return service, true
+}
+
+func runSystemctl(action, service string) error {
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("systemd 服务只能在 Linux 上管理")
+	}
+	cmd := exec.Command("systemctl", action, service)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(out.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf(msg)
+	}
+	return nil
+}
+
+func systemdActive(service string) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	return exec.Command("systemctl", "is-active", "--quiet", service).Run() == nil
 }
 
 type instanceRuntimeError struct {

@@ -88,6 +88,14 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "实例不存在")
 		return
 	}
+	if svc, ok := instanceSystemdService(inst); ok {
+		status := "stopped"
+		if systemdActive(svc) {
+			status = "running"
+		}
+		s.instances.SetStatus(inst.ID, status)
+		inst.Status = status
+	}
 	writeJSON(w, map[string]any{"status": inst.Status, "pid": inst.PID, "lastStarted": inst.LastStarted, "lastStopped": inst.LastStopped})
 }
 

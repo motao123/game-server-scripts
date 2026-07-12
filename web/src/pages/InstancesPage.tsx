@@ -11,15 +11,20 @@ export default function InstancesPage() {
   const [banlist, setBanlist] = useState<any[]>([])
   const [config, setConfig] = useState<any>({ categories: [] })
   async function refresh() {
-    const [i, p, s, w, b, c] = await Promise.all([
-      api<{ instances: any[] }>('/api/instances'), api<{ players: any[] }>('/api/players'), api<{ saves: any[] }>('/api/saves'), api<{ whitelist: any[] }>('/api/whitelist'), api<{ banlist: any[] }>('/api/banlist'), api<any>('/api/config')
-    ])
-    setInstances(i.instances || []); setPlayers(p.players || []); setSaves(s.saves || []); setWhitelist(w.whitelist || []); setBanlist(b.banlist || []); setConfig(c)
+    const i = await api<{ instances: any[] }>('/api/instances')
+    setInstances(i.instances || [])
+    const optional = await Promise.allSettled([api<{ players: any[] }>('/api/players'), api<{ saves: any[] }>('/api/saves'), api<{ whitelist: any[] }>('/api/whitelist'), api<{ banlist: any[] }>('/api/banlist'), api<any>('/api/config')])
+    const [p, s, w, b, c] = optional
+    if (p.status === 'fulfilled') setPlayers(p.value.players || [])
+    if (s.status === 'fulfilled') setSaves(s.value.saves || [])
+    if (w.status === 'fulfilled') setWhitelist(w.value.whitelist || [])
+    if (b.status === 'fulfilled') setBanlist(b.value.banlist || [])
+    if (c.status === 'fulfilled') setConfig(c.value)
   }
   useEffect(() => { refresh() }, [])
   async function post(path: string, body: any, ok: string) { try { const d = await api<any>(path, { method: 'POST', body }); if (d.ok === false) throw new Error(d.error || d.message); message.success(d.message || ok); refresh() } catch (e: any) { message.error(e.message) } }
   return <>
-    <PageHeader title="实例管理" desc="通用实例生命周期 + Palworld 专项管理" actions={<Button onClick={refresh}>刷新</Button>} />
+    <PageHeader title="实例管理" desc="实例启停、控制台、游戏配置与 Palworld 运维" actions={<Button onClick={refresh}>刷新</Button>} />
     <Tabs items={[
       { key: 'instances', label: '实例', children: <GenericInstances instances={instances} post={post} /> },
       { key: 'game-config', label: '游戏配置', children: <GameConfig instances={instances} /> },
@@ -158,10 +163,11 @@ function GameConfig({ instances }: { instances: any[] }) {
   return <Card title="通用游戏配置编辑器" extra={<Button onClick={loadConfig}>读取配置</Button>}>
     <Space wrap style={{ marginBottom: 16 }}>
       <Select style={{ width: 260 }} placeholder="选择实例" value={instanceId || undefined} onChange={(v) => { setInstanceId(v); setTemplateId(''); setLoaded(null); form.resetFields() }} options={instances.map(i => ({ value: i.id, label: `${i.name} (${i.instanceType})` }))} />
-      <Select style={{ width: 300 }} placeholder="选择配置模板" value={templateId || undefined} onChange={(v) => { setTemplateId(v); setLoaded(null); form.resetFields() }} options={availableTemplates.map(t => ({ value: t.id, label: t.name }))} />
+      <Select style={{ width: 300 }} placeholder={instance ? '选择配置模板' : '请先选择实例'} value={templateId || undefined} disabled={!instance || availableTemplates.length === 0} onChange={(v) => { setTemplateId(v); setLoaded(null); form.resetFields() }} options={availableTemplates.map(t => ({ value: t.id, label: t.name }))} />
       {loaded?.path && <Tag color="blue">{loaded.path}</Tag>}
       {loaded?.template?.format && <Tag>{loaded.template.format}</Tag>}
     </Space>
+    {instance && availableTemplates.length === 0 && <div style={{ color: '#999' }}>当前实例类型暂无通用配置模板，可在文件管理中直接编辑配置文件。</div>}
     {loaded ? <Form form={form} layout="vertical">
       {(loaded.template.fields || []).map((field: any) => <Form.Item key={field.key} name={field.key} label={field.label} extra={field.description || fieldHint(field)} rules={fieldRules(field)}>
         {field.type === 'bool' ? <Select options={[{ value: 'true', label: 'true' }, { value: 'false', label: 'false' }]} /> :
