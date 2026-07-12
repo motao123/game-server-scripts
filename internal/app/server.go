@@ -32,6 +32,7 @@ type Server struct {
 	deploys   *DeployManager
 	fileTasks *FileTaskManager
 	monitor   *Monitor
+	alerts    *AlertStore
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -48,6 +49,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.deploys = NewDeployManager()
 	s.fileTasks = NewFileTaskManager()
 	s.monitor = NewMonitor()
+	s.alerts = NewAlertStore(filepath.Join(cfg.DataDir, "alert_rules.json"))
 	return s, nil
 }
 
@@ -88,6 +90,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/system/processes", s.require(s.handleProcesses))
 	mux.HandleFunc("/api/system/ports", s.require(s.handlePorts))
 	mux.HandleFunc("/api/network/check", s.require(s.handleNetworkCheck))
+	mux.HandleFunc("/api/alerts/rules", s.require(s.handleAlertRules))
+	mux.HandleFunc("/api/alerts/status", s.require(s.handleAlertStatus))
 	mux.HandleFunc("/api/sysinfo", s.require(s.handleSystemInfo))
 
 	mux.HandleFunc("/api/status", s.require(s.handlePalStatus))
@@ -251,6 +255,32 @@ func (s *Server) handleSystemHistory(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleNetworkCheck(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"checks": CheckNetworkTargets()})
+}
+func (s *Server) handleAlertRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		writeJSON(w, map[string]any{"rules": s.alerts.List()})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !s.auth.RequireCSRF(r) {
+		writeError(w, http.StatusForbidden, "CSRF token 无效")
+		return
+	}
+	var body struct {
+		Rules []AlertRule `json:"rules"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := s.alerts.Replace(body.Rules); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "rules": s.alerts.List()})
+}
+func (s *Server) handleAlertStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"alerts": s.alerts.Evaluate(system.Snapshot(), CheckNetworkTargets())})
 }
 func (s *Server) handlePalStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.palworld.Status())

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Card, Col, Input, Row, Statistic, Table, Tag, message } from 'antd'
+import { Button, Card, Col, Input, InputNumber, Row, Space, Statistic, Switch, Table, Tag, message } from 'antd'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
@@ -34,19 +34,25 @@ export default function DashboardPage() {
   const [processes, setProcesses] = useState('')
   const [history, setHistory] = useState<any[]>([])
   const [network, setNetwork] = useState<any[]>([])
+  const [alerts, setAlerts] = useState<any[]>([])
+  const [rules, setRules] = useState<any[]>([])
   const [portSearch, setPortSearch] = useState('')
   const [procSearch, setProcSearch] = useState('')
 
   async function refresh() {
-    const [sys, inst, p, ps, h] = await Promise.all([
+    const [sys, inst, p, ps, h, a, r] = await Promise.all([
       api<SystemInfo>('/api/system/info'),
       api<{ instances: any[] }>('/api/instances'),
       api<{ raw: string }>('/api/system/ports'),
       api<{ raw: string }>('/api/system/processes'),
       api<{ points: any[] }>('/api/system/history'),
+      api<{ alerts: any[] }>('/api/alerts/status'),
+      api<{ rules: any[] }>('/api/alerts/rules'),
     ])
     setInfo(sys); setInstances(inst.instances || []); setPorts(p.raw || ''); setProcesses(ps.raw || '')
     setHistory(h.points || [])
+    setAlerts(a.alerts || [])
+    setRules(r.rules || [])
   }
   useEffect(() => { refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id) }, [])
 
@@ -57,10 +63,20 @@ export default function DashboardPage() {
     } catch (e: any) { message.error(e.message) }
   }
 
+  async function saveRules(nextRules = rules) {
+    try {
+      const d = await api<{ rules: any[] }>('/api/alerts/rules', { method: 'POST', body: { rules: nextRules } })
+      setRules(d.rules || [])
+      message.success('告警规则已保存')
+      refresh()
+    } catch (e: any) { message.error(e.message) }
+  }
+
   const runningCount = instances.filter(i => i.status === 'running').length
   const portLines = ports.split('\n').filter(l => !portSearch || l.includes(portSearch))
   const procLines = processes.split('\n').filter(l => !procSearch || l.includes(procSearch)).slice(0, 30)
   const latest = history[history.length - 1]
+  const triggeredAlerts = alerts.filter(a => a.triggered)
 
   return (
     <>
@@ -104,6 +120,18 @@ export default function DashboardPage() {
           </Card>
         </Col>
       </Row>
+      <Card className="section-card" title="告警规则" extra={<Tag color={triggeredAlerts.length ? 'red' : 'green'}>{triggeredAlerts.length ? `${triggeredAlerts.length} 条触发` : '正常'}</Tag>}>
+        <Table rowKey="id" dataSource={rules} pagination={false} size="small" columns={[
+          { title: '规则', dataIndex: 'name' },
+          { title: '指标', dataIndex: 'metric', width: 140 },
+          { title: '启用', width: 90, render: (_: any, rule: any, index: number) => <Switch checked={rule.enabled} onChange={checked => { const next = [...rules]; next[index] = { ...rule, enabled: checked }; setRules(next); saveRules(next) }} /> },
+          { title: '阈值', width: 140, render: (_: any, rule: any, index: number) => <InputNumber value={rule.threshold} min={0} max={rule.metric === 'networkFailures' ? 20 : 100} onChange={value => { const next = [...rules]; next[index] = { ...rule, threshold: Number(value || 0) }; setRules(next) }} onBlur={() => saveRules()} /> },
+          { title: '状态', render: (_: any, rule: any) => {
+            const status = alerts.find(a => a.rule?.id === rule.id)
+            return <Space><Tag color={status?.triggered ? 'red' : 'green'}>{status?.triggered ? '触发' : '正常'}</Tag><span style={{ color: '#666' }}>{status?.message || '-'}</span></Space>
+          } },
+        ]} />
+      </Card>
       <Card className="section-card" title="实例概览" extra={<Tag color={runningCount > 0 ? 'green' : 'default'}>{runningCount} 个运行中 / {instances.length} 个实例</Tag>}>
         {instances.length === 0 ? (
           <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>暂无实例。前往「实例管理」创建，或安装游戏服务器后会自动导入。</div>
