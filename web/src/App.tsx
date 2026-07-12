@@ -1,7 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { Layout, Menu, Spin } from 'antd'
-import { CloudServerOutlined, CodeOutlined, ControlOutlined, DatabaseOutlined, DeploymentUnitOutlined, FileTextOutlined, HomeOutlined, LogoutOutlined, PlayCircleOutlined, SafetyCertificateOutlined, SettingOutlined, ToolOutlined } from '@ant-design/icons'
+import { Button, ConfigProvider, Layout, Menu, Spin, theme as antdTheme } from 'antd'
+import { CloudServerOutlined, CodeOutlined, ControlOutlined, DatabaseOutlined, DeploymentUnitOutlined, FileTextOutlined, HomeOutlined, LogoutOutlined, MenuFoldOutlined, MenuUnfoldOutlined, MoonOutlined, PlayCircleOutlined, SafetyCertificateOutlined, SettingOutlined, SunOutlined, ToolOutlined } from '@ant-design/icons'
 import { useAuth } from './store'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -36,44 +36,51 @@ const menuItems = [
 
 export default function App() {
   const { authenticated, loading, verify, logout } = useAuth()
+  const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark')
+  const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => { verify() }, [verify])
+  useEffect(() => { localStorage.setItem('theme', dark ? 'dark' : 'light') }, [dark])
 
   if (loading) return <div className="boot"><Spin size="large" /></div>
-  if (!authenticated) return <LoginPage />
+  if (!authenticated) return <LoginPage dark={dark} />
 
   return (
-    <HashRouter>
-      <Layout className="app-shell">
-        <Header className="topbar">
-          <div className="brand"><span className="brand-mark">GSM</span></div>
-          <Menu mode="horizontal" items={menuItems} selectedKeys={[]} onClick={({ key }) => window.location.hash = key} style={{ flex: 1, border: 'none', background: 'transparent' }} />
-          <LogoutOutlined onClick={logout} style={{ fontSize: 18, cursor: 'pointer' }} />
-        </Header>
-        <Layout>
-          <Sider width={200} className="sidebar">
-            <Menu mode="inline" items={menuItems} onClick={({ key }) => window.location.hash = key} />
-          </Sider>
-          <Content className="content">
-            <Routes>
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              <Route path="/terminal" element={<TerminalPage />} />
-              <Route path="/instances" element={<InstancesPage />} />
-              <Route path="/deployment" element={<DeploymentPage />} />
-              <Route path="/files" element={<FilesPage />} />
-              <Route path="/backup" element={<BackupPage />} />
-              <Route path="/tasks" element={<TasksPage />} />
-              <Route path="/environment" element={<EnvironmentPage />} />
-              <Route path="/rcon" element={<RconPage />} />
-              <Route path="/plugins" element={<PluginsPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/about" element={<AboutPage />} />
-              <Route path="*" element={<Navigate to="/dashboard" replace />} />
-            </Routes>
-          </Content>
+    <ConfigProvider theme={{ algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm, token: { colorPrimary: '#1976D2', borderRadius: 8 } }}>
+      <HashRouter>
+        <Layout className="app-shell">
+          <Header className="topbar">
+            <Button type="text" icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} onClick={() => setCollapsed(!collapsed)} />
+            <div className="brand"><span className="brand-mark">GSM</span></div>
+            <div style={{ flex: 1 }} />
+            <Button type="text" icon={dark ? <SunOutlined /> : <MoonOutlined />} onClick={() => setDark(!dark)} />
+            <Button type="text" icon={<LogoutOutlined />} onClick={logout} />
+          </Header>
+          <Layout>
+            <Sider width={collapsed ? 0 : 200} className="sidebar" collapsible collapsed={collapsed} trigger={null}>
+              <Menu mode="inline" items={menuItems} theme={dark ? 'dark' : 'light'} onClick={({ key }) => window.location.hash = key} />
+            </Sider>
+            <Content className="content">
+              <Routes>
+                <Route path="/" element={<Navigate to="/dashboard" replace />} />
+                <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/terminal" element={<TerminalPage />} />
+                <Route path="/instances" element={<InstancesPage />} />
+                <Route path="/deployment" element={<DeploymentPage />} />
+                <Route path="/files" element={<FilesPage />} />
+                <Route path="/backup" element={<BackupPage />} />
+                <Route path="/tasks" element={<TasksPage />} />
+                <Route path="/environment" element={<EnvironmentPage />} />
+                <Route path="/rcon" element={<RconPage />} />
+                <Route path="/plugins" element={<PluginsPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/about" element={<AboutPage />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+              </Routes>
+            </Content>
+          </Layout>
         </Layout>
-      </Layout>
-    </HashRouter>
+      </HashRouter>
+    </ConfigProvider>
   )
 }

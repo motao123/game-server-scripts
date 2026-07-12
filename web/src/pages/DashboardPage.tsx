@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Card, Col, Row, Statistic, Table, Tag, message } from 'antd'
+import { Button, Card, Col, Input, Row, Statistic, Table, Tag, message } from 'antd'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
@@ -20,48 +20,81 @@ function formatUptime(seconds: number) {
   return `${m}分`
 }
 
+function formatBytes(b: number) {
+  if (!b) return '-'
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MB`
+  return `${(b / 1073741824).toFixed(2)} GB`
+}
+
 export default function DashboardPage() {
   const [info, setInfo] = useState<SystemInfo | null>(null)
   const [instances, setInstances] = useState<any[]>([])
+  const [ports, setPorts] = useState('')
+  const [processes, setProcesses] = useState('')
+  const [portSearch, setPortSearch] = useState('')
+  const [procSearch, setProcSearch] = useState('')
 
   async function refresh() {
-    const [sys, inst] = await Promise.all([
+    const [sys, inst, p, ps] = await Promise.all([
       api<SystemInfo>('/api/system/info'),
-      api<{ instances: any[] }>('/api/instances')
+      api<{ instances: any[] }>('/api/instances'),
+      api<{ raw: string }>('/api/system/ports'),
+      api<{ raw: string }>('/api/system/processes'),
     ])
-    setInfo(sys)
-    setInstances(inst.instances || [])
+    setInfo(sys); setInstances(inst.instances || []); setPorts(p.raw || ''); setProcesses(ps.raw || '')
   }
-  useEffect(() => { refresh(); const id = setInterval(refresh, 30000); return () => clearInterval(id) }, [])
+  useEffect(() => { refresh(); const id = setInterval(refresh, 5000); return () => clearInterval(id) }, [])
 
   const runningCount = instances.filter(i => i.status === 'running').length
+  const portLines = ports.split('\n').filter(l => !portSearch || l.includes(portSearch))
+  const procLines = processes.split('\n').filter(l => !procSearch || l.includes(procSearch)).slice(0, 30)
 
-  return <>
-    <PageHeader title="仪表盘" desc="服务器系统资源与实例概览" actions={<Button onClick={refresh}>刷新</Button>} />
-    <Row gutter={[16, 16]}>
-      <Col xs={24} md={6}><Card><Statistic title="CPU" value={info?.cpuPercent || 0} precision={1} suffix="%" /></Card></Col>
-      <Col xs={24} md={6}><Card><Statistic title="内存" value={info?.memory.percent || 0} precision={1} suffix="%" /></Card></Col>
-      <Col xs={24} md={6}><Card><Statistic title="磁盘" value={info?.disk.percent || 0} precision={1} suffix="%" /></Card></Col>
-      <Col xs={24} md={6}><Card><Statistic title="系统运行" value={formatUptime(info?.uptime || 0)} /></Card></Col>
-    </Row>
-    <Card className="section-card" title="实例概览" extra={<Tag color={runningCount > 0 ? 'green' : 'default'}>{runningCount} 个运行中 / {instances.length} 个实例</Tag>}>
-      {instances.length === 0 ? (
-        <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>
-          暂无实例。前往「实例管理」创建，或安装游戏服务器后会自动导入。
-        </div>
-      ) : (
-        <Table
-          rowKey="id"
-          dataSource={instances}
-          pagination={false}
-          columns={[
+  return (
+    <>
+      <PageHeader title="仪表盘" desc="系统资源、实例、端口和进程概览，5 秒自动刷新" actions={<Button onClick={refresh}>刷新</Button>} />
+      <Row gutter={[16, 16]}>
+        <Col xs={12} md={6}><Card><Statistic title="CPU" value={info?.cpuPercent || 0} precision={1} suffix="%" valueStyle={{ color: (info?.cpuPercent || 0) > 80 ? '#C10015' : '#1976D2' }} /></Card></Col>
+        <Col xs={12} md={6}><Card><Statistic title="内存" value={info?.memory.percent || 0} precision={1} suffix="%" valueStyle={{ color: (info?.memory.percent || 0) > 85 ? '#C10015' : '#1976D2' }} /></Card></Col>
+        <Col xs={12} md={6}><Card><Statistic title="磁盘" value={info?.disk.percent || 0} precision={1} suffix="%" valueStyle={{ color: (info?.disk.percent || 0) > 90 ? '#C10015' : '#1976D2' }} /></Card></Col>
+        <Col xs={12} md={6}><Card><Statistic title="系统运行" value={formatUptime(info?.uptime || 0)} /></Card></Col>
+      </Row>
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} md={12}>
+          <Card title="内存详情" size="small">
+            <Statistic title="已用 / 总量" value={`${formatBytes(info?.memory.used || 0)} / ${formatBytes(info?.memory.total || 0)}`} />
+          </Card>
+        </Col>
+        <Col xs={24} md={12}>
+          <Card title="磁盘详情" size="small">
+            <Statistic title="已用 / 总量" value={`${formatBytes(info?.disk.used || 0)} / ${formatBytes(info?.disk.total || 0)}`} />
+          </Card>
+        </Col>
+      </Row>
+      <Card className="section-card" title="实例概览" extra={<Tag color={runningCount > 0 ? 'green' : 'default'}>{runningCount} 个运行中 / {instances.length} 个实例</Tag>}>
+        {instances.length === 0 ? (
+          <div style={{ textAlign: 'center', color: '#999', padding: 24 }}>暂无实例。前往「实例管理」创建，或安装游戏服务器后会自动导入。</div>
+        ) : (
+          <Table rowKey="id" dataSource={instances} pagination={false} size="small" columns={[
             { title: '名称', dataIndex: 'name' },
             { title: '类型', dataIndex: 'instanceType' },
-            { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'stopped' ? 'default' : 'orange'}>{s || 'unknown'}</Tag> },
-            { title: '工作目录', dataIndex: 'workingDirectory' }
-          ]}
-        />
-      )}
-    </Card>
-  </>
+            { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'error' ? 'red' : 'default'}>{s}</Tag> },
+            { title: '工作目录', dataIndex: 'workingDirectory', ellipsis: true },
+          ]} />
+        )}
+      </Card>
+      <Row gutter={[16, 16]}>
+        <Col xs={24} lg={12}>
+          <Card title="监听端口" size="small" extra={<Input.Search placeholder="搜索端口" value={portSearch} onChange={e => setPortSearch(e.target.value)} size="small" style={{ width: 150 }} allowClear />}>
+            <pre className="log-box" style={{ maxHeight: 300 }}>{portLines.join('\n')}</pre>
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title="进程列表 (Top 30)" size="small" extra={<Input.Search placeholder="搜索进程" value={procSearch} onChange={e => setProcSearch(e.target.value)} size="small" style={{ width: 150 }} allowClear />}>
+            <pre className="log-box" style={{ maxHeight: 300 }}>{procLines.join('\n')}</pre>
+          </Card>
+        </Col>
+      </Row>
+    </>
+  )
 }
