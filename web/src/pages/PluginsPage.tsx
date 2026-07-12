@@ -1,4 +1,4 @@
-import { Button, Card, Empty, Form, Input, List, Modal, Space, Switch, Tabs, Tag, message } from 'antd'
+import { Button, Card, Empty, Form, Input, List, Modal, Space, Switch, Table, Tabs, Tag, message } from 'antd'
 import { CloudDownloadOutlined, DeleteOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
@@ -7,15 +7,18 @@ import { api } from '../api'
 export default function PluginsPage() {
   const [plugins, setPlugins] = useState<any[]>([])
   const [catalog, setCatalog] = useState<any[]>([])
+  const [events, setEvents] = useState<any[]>([])
   const [modalOpen, setModalOpen] = useState(false)
   const [form] = Form.useForm()
   async function load() {
-    const [installed, market] = await Promise.all([
+    const [installed, market, audit] = await Promise.all([
       api<{ plugins: any[] }>('/api/plugins'),
       api<{ plugins: any[] }>('/api/plugins/catalog'),
+      api<{ events: any[] }>('/api/plugins/audit?limit=100'),
     ])
     setPlugins(installed.plugins || [])
     setCatalog(market.plugins || [])
+    setEvents(audit.events || [])
   }
   useEffect(() => { load() }, [])
   async function toggle(id: string, enabled: boolean) {
@@ -77,6 +80,17 @@ export default function PluginsPage() {
                 />
               </List.Item>
             )} />
+          ) },
+          { key: 'audit', label: '审计日志', children: events.length === 0 ? <Empty description="暂无审计事件" /> : (
+            <Table size="small" rowKey={(_: any, index) => String(index)} dataSource={events} pagination={{ pageSize: 10 }} columns={[
+              { title: '时间', dataIndex: 'time', width: 190 },
+              { title: '动作', dataIndex: 'action', width: 170 },
+              { title: '插件', dataIndex: 'pluginId', width: 160, render: (v: string) => v || '-' },
+              { title: '状态', dataIndex: 'status', width: 90, render: (v: string) => <Tag color={v === 'success' ? 'green' : 'red'}>{v === 'success' ? '成功' : '失败'}</Tag> },
+              { title: '来源', dataIndex: 'remoteIp', width: 130, render: (v: string) => v || '-' },
+              { title: '说明', dataIndex: 'message' },
+              { title: '详情', dataIndex: 'details', render: (v: any) => v ? <span style={{ color: '#666' }}>{JSON.stringify(v)}</span> : '-' },
+            ]} />
           ) },
         ]} />
       </Card>

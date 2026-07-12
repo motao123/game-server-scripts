@@ -20,19 +20,20 @@ import (
 )
 
 type Server struct {
-	cfg       config.Config
-	auth      *auth.Manager
-	palworld  palworld.Service
-	httpSrv   *http.Server
-	instances *InstanceStore
-	tasks     *TaskStore
-	terminal  *terminal.Manager
-	scheduler *Scheduler
-	installs  *InstallManager
-	deploys   *DeployManager
-	fileTasks *FileTaskManager
-	monitor   *Monitor
-	alerts    *AlertStore
+	cfg         config.Config
+	auth        *auth.Manager
+	palworld    palworld.Service
+	httpSrv     *http.Server
+	instances   *InstanceStore
+	tasks       *TaskStore
+	terminal    *terminal.Manager
+	scheduler   *Scheduler
+	installs    *InstallManager
+	deploys     *DeployManager
+	fileTasks   *FileTaskManager
+	monitor     *Monitor
+	alerts      *AlertStore
+	pluginAudit *PluginAuditStore
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -50,6 +51,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.fileTasks = NewFileTaskManager()
 	s.monitor = NewMonitor()
 	s.alerts = NewAlertStore(filepath.Join(cfg.DataDir, "alert_rules.json"))
+	s.pluginAudit = NewPluginAuditStore(filepath.Join(cfg.DataDir, "plugin_audit.jsonl"))
 	return s, nil
 }
 
@@ -173,6 +175,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/plugins/create", s.requirePost(s.handlePluginCreate))
 	mux.HandleFunc("/api/plugins/install", s.requirePost(s.handlePluginInstall))
 	mux.HandleFunc("/api/plugins/upgrade", s.requirePost(s.handlePluginUpgrade))
+	mux.HandleFunc("/api/plugins/audit", s.require(s.handlePluginAudit))
 	mux.HandleFunc("/api/plugins/config", s.require(s.handlePluginConfig))
 	mux.HandleFunc("/api/plugins/delete", s.requirePost(s.handlePluginDelete))
 	mux.HandleFunc("/api/plugins/toggle", s.requirePost(s.handlePluginToggle))

@@ -42,9 +42,11 @@ func (s *Server) handlePluginCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	data, _ := json.MarshalIndent(meta, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0644); err != nil {
+		s.pluginAudit.Record(r, "plugin.create", body.Name, "failed", err.Error(), nil)
 		writeError(w, 500, err.Error())
 		return
 	}
+	s.pluginAudit.Record(r, "plugin.create", body.Name, "success", "插件已创建", map[string]any{"version": body.Version})
 	writeJSON(w, map[string]any{"ok": true, "plugin": meta})
 }
 
@@ -60,13 +62,16 @@ func (s *Server) handlePluginDelete(w http.ResponseWriter, r *http.Request) {
 	dir := filepath.Join(s.cfg.DataDir, "plugins", body.Name)
 	backup, err := s.backupPluginDir(body.Name)
 	if err != nil {
+		s.pluginAudit.Record(r, "plugin.delete", body.Name, "failed", err.Error(), nil)
 		writeError(w, 500, err.Error())
 		return
 	}
 	if err := os.RemoveAll(dir); err != nil {
+		s.pluginAudit.Record(r, "plugin.delete", body.Name, "failed", err.Error(), map[string]any{"backup": backup})
 		writeError(w, 500, err.Error())
 		return
 	}
+	s.pluginAudit.Record(r, "plugin.delete", body.Name, "success", "插件已删除并备份", map[string]any{"backup": backup})
 	writeJSON(w, map[string]any{"ok": true, "backup": backup})
 }
 
@@ -97,9 +102,11 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, err := s.installPluginFromCatalog(*found)
 	if err != nil {
+		s.pluginAudit.Record(r, "plugin.install", body.ID, "failed", err.Error(), map[string]any{"version": found.Version, "permissions": found.Permissions})
 		writeError(w, 500, err.Error())
 		return
 	}
+	s.pluginAudit.Record(r, "plugin.install", body.ID, "success", "插件已安装", map[string]any{"version": meta.Version, "permissions": meta.Permissions, "risk": found.Risk})
 	writeJSON(w, map[string]any{"ok": true, "plugin": meta})
 }
 
@@ -126,9 +133,11 @@ func (s *Server) handlePluginUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	meta, backup, err := s.upgradePluginFromCatalog(*found)
 	if err != nil {
+		s.pluginAudit.Record(r, "plugin.upgrade", body.ID, "failed", err.Error(), map[string]any{"version": found.Version, "permissions": found.Permissions})
 		writeError(w, 500, err.Error())
 		return
 	}
+	s.pluginAudit.Record(r, "plugin.upgrade", body.ID, "success", "插件已升级", map[string]any{"version": meta.Version, "backup": backup, "permissions": meta.Permissions, "risk": found.Risk})
 	writeJSON(w, map[string]any{"ok": true, "plugin": meta, "backup": backup})
 }
 
@@ -177,9 +186,11 @@ func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	data, _ := json.MarshalIndent(body.Config, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0644); err != nil {
+		s.pluginAudit.Record(r, "plugin.config.save", body.ID, "failed", err.Error(), nil)
 		writeError(w, 500, err.Error())
 		return
 	}
+	s.pluginAudit.Record(r, "plugin.config.save", body.ID, "success", "插件配置已保存", nil)
 	writeJSON(w, map[string]any{"ok": true, "config": body.Config})
 }
 
