@@ -112,7 +112,19 @@ func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"logs": ""})
 		return
 	}
-	writeJSON(w, map[string]any{"logs": string(data)})
+	logs := string(data)
+	if r.URL.Query().Get("tail") != "" {
+		logs = tailLines(logs, 300)
+	}
+	writeJSON(w, map[string]any{"logs": logs})
+}
+
+func tailLines(s string, max int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= max {
+		return s
+	}
+	return strings.Join(lines[len(lines)-max:], "\n")
 }
 
 func (s *Server) instanceStart(w http.ResponseWriter, r *http.Request, inst Instance) {
@@ -188,6 +200,7 @@ func (s *Server) instanceStart(w http.ResponseWriter, r *http.Request, inst Inst
 		f.Close()
 		runningProcsMu.Lock()
 		delete(runningProcs, inst.ID)
+		delete(runningStdins, inst.ID)
 		runningProcsMu.Unlock()
 		cur, ok := s.instances.Get(inst.ID)
 		if ok && cur.Status != "stopped" {

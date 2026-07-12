@@ -35,7 +35,7 @@ export default function InstancesPage() {
 function GenericInstances({ instances, post }: { instances: any[]; post: (p: string, b: any, ok: string) => void }) {
   const [editModal, setEditModal] = useState<{ open: boolean; data: any }>({ open: false, data: null })
   const [editForm] = Form.useForm()
-  const [logModal, setLogModal] = useState<{ open: boolean; id: string; logs: string }>({ open: false, id: '', logs: '' })
+  const [consoleModal, setConsoleModal] = useState<{ open: boolean; instance: any; logs: string; input: string }>({ open: false, instance: null, logs: '', input: '' })
   const [stopping, setStopping] = useState<string>('')
   function delInstance(r: any) {
     Modal.confirm({
@@ -44,9 +44,26 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
     })
   }
   function openEdit(r: any) { editForm.setFieldsValue(r); setEditModal({ open: true, data: r }) }
-  async function viewLogs(r: any) {
-    try { const d = await api<{ logs: string }>(`/api/instances/logs?id=${r.id}`); setLogModal({ open: true, id: r.id, logs: d.logs || '(无日志)' }) }
-    catch (e: any) { message.error(e.message) }
+  async function openConsole(r: any) {
+    try {
+      const d = await api<{ logs: string }>(`/api/instances/logs?id=${r.id}&tail=1`)
+      setConsoleModal({ open: true, instance: r, logs: d.logs || '(无日志)', input: '' })
+    } catch (e: any) { message.error(e.message) }
+  }
+  async function refreshConsole() {
+    if (!consoleModal.instance) return
+    try {
+      const d = await api<{ logs: string }>(`/api/instances/logs?id=${consoleModal.instance.id}&tail=1`)
+      setConsoleModal(prev => ({ ...prev, logs: d.logs || '(无日志)' }))
+    } catch (e: any) { message.error(e.message) }
+  }
+  async function sendConsoleInput() {
+    if (!consoleModal.instance || !consoleModal.input.trim()) return
+    try {
+      await api('/api/instances/input', { method: 'POST', body: { id: consoleModal.instance.id, data: consoleModal.input + '\n' } })
+      setConsoleModal(prev => ({ ...prev, input: '' }))
+      setTimeout(refreshConsole, 500)
+    } catch (e: any) { message.error(e.message) }
   }
   async function stopInstance(r: any) {
     setStopping(r.id)
@@ -70,7 +87,7 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
     </Form>
     <Table rowKey="id" dataSource={instances} pagination={false} className="section-card" columns={[
       { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'error' ? 'red' : 'default'}>{s}</Tag> }, { title: 'PID', dataIndex: 'pid', width: 80, render: (p: number) => p || '-' },
-      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => stopInstance(r)} disabled={r.status !== 'running'} loading={stopping === r.id}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button onClick={() => viewLogs(r)} disabled={r.status !== 'running' && !r.lastStarted}>日志</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
+      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => stopInstance(r)} disabled={r.status !== 'running'} loading={stopping === r.id}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button onClick={() => openConsole(r)} disabled={r.status !== 'running' && !r.lastStarted}>控制台</Button><Button onClick={() => openEdit(r)}>编辑</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
     ]} />
     <Modal title="编辑实例" open={editModal.open} onOk={saveEdit} onCancel={() => setEditModal({ open: false, data: null })} okText="保存" cancelText="取消">
       <Form form={editForm} layout="vertical">
@@ -81,8 +98,13 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
         <Form.Item name="instanceType" label="类型"><Select options={[{value:'generic',label:'通用'},{value:'palworld',label:'Palworld'},{value:'minecraft-java',label:'Minecraft Java'},{value:'minecraft-bedrock',label:'Minecraft Bedrock'},{value:'valheim',label:'Valheim'},{value:'terraria',label:'Terraria'}]} /></Form.Item>
       </Form>
     </Modal>
-    <Modal title="实例日志" open={logModal.open} onOk={() => setLogModal({ open: false, id: '', logs: '' })} onCancel={() => setLogModal({ open: false, id: '', logs: '' })} okText="关闭" cancelText="取消" width={800}>
-      <pre className="log-box" style={{ maxHeight: 400 }}>{logModal.logs}</pre>
+    <Modal title={consoleModal.instance ? `实例控制台 - ${consoleModal.instance.name}` : '实例控制台'} open={consoleModal.open} onOk={() => setConsoleModal({ open: false, instance: null, logs: '', input: '' })} onCancel={() => setConsoleModal({ open: false, instance: null, logs: '', input: '' })} okText="关闭" cancelText="取消" width={900}>
+      <Space style={{ marginBottom: 8 }}>
+        <Button onClick={refreshConsole}>刷新日志</Button>
+        {consoleModal.instance?.pid ? <Tag color="green">PID {consoleModal.instance.pid}</Tag> : <Tag>未运行</Tag>}
+      </Space>
+      <pre className="log-box" style={{ maxHeight: 420 }}>{consoleModal.logs}</pre>
+      <Input.Search value={consoleModal.input} onChange={e => setConsoleModal(prev => ({ ...prev, input: e.target.value }))} onSearch={sendConsoleInput} enterButton="发送" placeholder="发送命令到实例 stdin" disabled={consoleModal.instance?.status !== 'running'} />
     </Modal>
   </Card>
 }
