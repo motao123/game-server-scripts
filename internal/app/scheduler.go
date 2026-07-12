@@ -1,9 +1,11 @@
 package app
 
 import (
+	"fmt"
 	"log"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/robfig/cron/v3"
 )
@@ -18,79 +20,157 @@ func NewScheduler(app *Server) *Scheduler { return &Scheduler{cron: cron.New(), 
 func (s *Scheduler) Start() {
 	for _, task := range s.app.tasks.List() {
 		if !task.Enabled || strings.TrimSpace(task.Cron) == "" {
+			s.app.tasks.SetNextRun(task.ID, "")
 			continue
 		}
 		t := task
-		_, err := s.cron.AddFunc(t.Cron, func() { s.run(t) })
+		_, err := s.cron.AddFunc(t.Cron, func() { s.RunTask(t.ID) })
 		if err != nil {
 			log.Printf("schedule task %s failed: %v", t.Name, err)
+			continue
 		}
+		s.app.tasks.SetNextRun(t.ID, nextRunFor(t.Cron))
 	}
 	s.cron.Start()
 }
 
 func (s *Scheduler) Stop() { s.cron.Stop() }
 
-func (s *Scheduler) run(t ScheduledTask) {
-	parts := strings.Fields(t.Action)
-	if len(parts) == 0 {
-		return
-	}
-	switch parts[0] {
-	case "backup":
-		s.app.palworld.Backup()
-	case "shell":
-		cmd := strings.TrimSpace(strings.TrimPrefix(t.Action, "shell"))
-		if cmd != "" {
-			_ = exec.Command("sh", "-lc", cmd).Run()
-		}
-	case "instance":
-		if len(parts) >= 3 {
-			inst, ok := s.app.instances.Get(parts[2])
-			if ok {
-				switch parts[1] {
-				case "start":
-					runInstanceCommand(inst, inst.StartCommand)
-				case "stop":
-					runInstanceCommand(inst, inst.StopCommand)
-				case "restart":
-					runInstanceCommand(inst, inst.StopCommand)
-					runInstanceCommand(inst, inst.StartCommand)
-				}
-			}
-		}
-	case "power":
-		if len(parts) >= 3 {
-			inst, ok := s.app.instances.Get(parts[2])
-			if ok {
-				switch parts[1] {
-				case "start":
-					s.app.instances.SetStatus(inst.ID, "running")
-				case "stop":
-					s.app.instances.SetStatus(inst.ID, "stopped")
-				case "restart":
-					s.app.instances.SetStatus(inst.ID, "stopped")
-					s.app.instances.SetStatus(inst.ID, "running")
-				}
-			}
-		}
-	case "command":
-		if len(parts) >= 3 {
-			inst, ok := s.app.instances.Get(parts[1])
-			if ok && inst.Status == "running" {
-				cmd := strings.Join(parts[2:], " ")
-				runInstanceCommand(inst, cmd)
-			}
-		}
-	case "system":
-		if len(parts) >= 2 && parts[1] == "steam_update" {
-			log.Println("system task: steam_update (not implemented)")
-		}
-	}
-}
-
 func (s *Scheduler) Reload() {
 	s.cron.Stop()
 	s.cron = cron.New()
 	s.Start()
+}
+
+func (s *Scheduler) RunTask(id string) {
+	task, ok := s.app.tasks.Get(id)
+	if !ok {
+		return
+	}
+	err := s.run(task)
+	s.app.tasks.SetRunResult(id, err)
+	s.RefreshNextRun(id)
+	if err != nil {
+		log.Printf("schedule task %s failed: %v", task.Name, err)
+	}
+}
+
+func (s *Scheduler) RefreshNextRun(id string) {
+	task, ok := s.app.tasks.Get(id)
+	if !ok || !task.Enabled || strings.TrimSpace(task.Cron) == "" {
+		s.app.tasks.SetNextRun(id, "")
+		return
+	}
+	s.app.tasks.SetNextRun(id, nextRunFor(task.Cron))
+}
+
+func nextRunFor(expr string) string {
+	schedule, err := cron.ParseStandard(expr)
+	if err != nil {
+		return ""
+	}
+	return schedule.Next(time.Now()).Format(time.RFC3339)
+}
+
+func (s *Scheduler) run(t ScheduledTask) error {
+	parts := strings.Fields(t.Action)
+	if len(parts) == 0 {
+		return fmt.Errorf("任务动作为空")
+	}
+	switch parts[0] {
+	case "backup":
+		ok, msg := s.app.palworld.Backup()
+		if !ok {
+			return fmt.Errorf(msg)
+		}
+	case "shell":
+		cmd := strings.TrimSpace(strings.TrimPrefix(t.Action, "shell"))
+		if cmd == "" {
+			return fmt.Errorf("shell 命令为空")
+		}
+		out, err := exec.Command("sh", "-lc", cmd).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+	case "instance", "power":
+		if len(parts) < 3 {
+			return fmt.Errorf("实例任务参数不足")
+		}
+		return s.runInstanceAction(parts[1], parts[2])
+	case "command":
+		if len(parts) < 3 {
+			return fmt.Errorf("命令任务参数不足")
+		}
+		inst, ok := s.app.instances.Get(parts[1])
+		if !ok {
+			return fmt.Errorf("实例不存在")
+		}
+		if inst.Status != "running" {
+			return fmt.Errorf("实例未运行")
+		}
+		cmd := strings.Join(parts[2:], " ")
+		out, err := runInstanceCommand(inst, cmd)
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+	case "system":
+		if len(parts) >= 2 && parts[1] == "steam_update" {
+			log.Println("system task: steam_update (not implemented)")
+			return nil
+		}
+		return fmt.Errorf("未知系统任务")
+	default:
+		return fmt.Errorf("未知任务类型: %s", parts[0])
+	}
+	return nil
+}
+
+func (s *Scheduler) runInstanceAction(action, id string) error {
+	inst, ok := s.app.instances.Get(id)
+	if !ok {
+		return fmt.Errorf("实例不存在")
+	}
+	switch action {
+	case "start":
+		return s.startInstanceForTask(inst)
+	case "stop":
+		return s.stopInstanceForTask(inst)
+	case "restart":
+		if err := s.stopInstanceForTask(inst); err != nil {
+			return err
+		}
+		updated, ok := s.app.instances.Get(id)
+		if !ok {
+			return fmt.Errorf("实例不存在")
+		}
+		return s.startInstanceForTask(updated)
+	default:
+		return fmt.Errorf("未知实例动作: %s", action)
+	}
+}
+
+func (s *Scheduler) startInstanceForTask(inst Instance) error {
+	if inst.StartCommand == "" {
+		return fmt.Errorf("启动命令为空")
+	}
+	out, err := runInstanceCommand(inst, inst.StartCommand)
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	s.app.instances.SetStatus(inst.ID, "running")
+	return nil
+}
+
+func (s *Scheduler) stopInstanceForTask(inst Instance) error {
+	if inst.Status == "stopped" {
+		return nil
+	}
+	if inst.StopCommand != "" && inst.StopCommand != "ctrl+c" {
+		out, err := runInstanceCommand(inst, inst.StopCommand)
+		if err != nil {
+			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+	}
+	s.app.instances.SetStatus(inst.ID, "stopped")
+	return nil
 }

@@ -22,6 +22,7 @@ export default function InstancesPage() {
     <PageHeader title="实例管理" desc="通用实例生命周期 + Palworld 专项管理" actions={<Button onClick={refresh}>刷新</Button>} />
     <Tabs items={[
       { key: 'instances', label: '实例', children: <GenericInstances instances={instances} post={post} /> },
+      { key: 'game-config', label: '游戏配置', children: <GameConfig instances={instances} /> },
       { key: 'players', label: '玩家', children: <Card><List dataSource={players} renderItem={(p) => <List.Item actions={[<Button onClick={() => post('/api/kick', { steamid: p.steamid }, '已踢出')}>踢出</Button>, <Button danger onClick={() => post('/api/ban', { steamid: p.steamid }, '已封禁')}>封禁</Button>]}><List.Item.Meta title={p.name || p.steamid} description={`SteamID: ${p.steamid || '-'} PlayerUID: ${p.playeruid || '-'}`} /></List.Item>} /></Card> },
       { key: 'saves', label: '存档', children: <Saves saves={saves} refresh={refresh} /> },
       { key: 'config', label: '配置', children: <ConfigView config={config} /> },
@@ -100,6 +101,54 @@ function Saves({ saves, refresh }: { saves: any[]; refresh: () => void }) {
 
 function ConfigView({ config }: { config: any }) {
   return <Card>{(config.categories || []).map((cat: any) => <Card key={cat.name} type="inner" title={cat.name} className="section-card"><div className="config-grid">{cat.items.map((it: any) => <div key={it.key}><Tag color="blue">{it.label}</Tag><span>{String(it.value)}</span></div>)}</div></Card>)}</Card>
+}
+
+function GameConfig({ instances }: { instances: any[] }) {
+  const [templates, setTemplates] = useState<any[]>([])
+  const [instanceId, setInstanceId] = useState<string>('')
+  const [templateId, setTemplateId] = useState<string>('')
+  const [loaded, setLoaded] = useState<any>(null)
+  const [form] = Form.useForm()
+
+  useEffect(() => { api<{ templates: any[] }>('/api/game-config/templates').then(d => setTemplates(d.templates || [])).catch(e => message.error(e.message)) }, [])
+
+  const instance = instances.find(i => i.id === instanceId)
+  const availableTemplates = templates.filter(t => !instance || !t.instanceType || t.instanceType === instance.instanceType)
+
+  async function loadConfig() {
+    if (!instanceId || !templateId) return message.warning('请选择实例和配置模板')
+    try {
+      const d = await api<any>(`/api/game-config/read?instanceId=${encodeURIComponent(instanceId)}&templateId=${encodeURIComponent(templateId)}`)
+      setLoaded(d)
+      form.setFieldsValue(d.values || {})
+    } catch (e: any) { message.error(e.message) }
+  }
+
+  async function saveConfig() {
+    if (!loaded) return
+    try {
+      const values = await form.validateFields()
+      await api('/api/game-config/save', { method: 'POST', body: { instanceId, templateId, values } })
+      message.success('配置已保存')
+    } catch (e: any) { if (e.errorFields?.length) return; message.error(e.message) }
+  }
+
+  return <Card title="通用游戏配置编辑器" extra={<Button onClick={loadConfig}>读取配置</Button>}>
+    <Space wrap style={{ marginBottom: 16 }}>
+      <Select style={{ width: 260 }} placeholder="选择实例" value={instanceId || undefined} onChange={(v) => { setInstanceId(v); setTemplateId(''); setLoaded(null); form.resetFields() }} options={instances.map(i => ({ value: i.id, label: `${i.name} (${i.instanceType})` }))} />
+      <Select style={{ width: 300 }} placeholder="选择配置模板" value={templateId || undefined} onChange={(v) => { setTemplateId(v); setLoaded(null); form.resetFields() }} options={availableTemplates.map(t => ({ value: t.id, label: t.name }))} />
+      {loaded?.path && <Tag color="blue">{loaded.path}</Tag>}
+    </Space>
+    {loaded ? <Form form={form} layout="vertical">
+      {(loaded.template.fields || []).map((field: any) => <Form.Item key={field.key} name={field.key} label={field.label} extra={field.description}>
+        {field.type === 'bool' ? <Select options={[{ value: 'true', label: 'true' }, { value: 'false', label: 'false' }]} /> :
+          field.type === 'password' ? <Input.Password /> :
+          field.type === 'select' ? <Input /> :
+          field.type === 'number' ? <Input type="number" /> : <Input />}
+      </Form.Item>)}
+      <Button type="primary" onClick={saveConfig}>保存配置</Button>
+    </Form> : <div style={{ color: '#999' }}>选择实例和模板后读取配置。未存在的配置文件会使用模板默认值。</div>}
+  </Card>
 }
 
 function Whitelist({ whitelist, post }: { whitelist: any[]; post: (p: string, b: any, ok: string) => void }) {

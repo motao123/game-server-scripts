@@ -207,12 +207,25 @@ func createTarGz(src, dst string) error {
 }
 
 func (s *Server) handleTaskCreate(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Name, Cron, Action string }
+	var body ScheduledTask
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	t := NewTask(body.Name, body.Cron, body.Action)
-	s.tasks.list = append(s.tasks.list, t)
-	_ = s.tasks.Save()
-	writeJSON(w, map[string]any{"ok": true, "task": t})
+	if strings.TrimSpace(body.Name) == "" || strings.TrimSpace(body.Cron) == "" || strings.TrimSpace(body.Action) == "" {
+		writeError(w, http.StatusBadRequest, "任务名称、Cron 和动作不能为空")
+		return
+	}
+	if body.ID == "" && !body.Enabled {
+		body.Enabled = true
+	}
+	task, err := s.tasks.Upsert(body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.scheduler.Reload()
+	if refreshed, ok := s.tasks.Get(task.ID); ok {
+		task = refreshed
+	}
+	writeJSON(w, map[string]any{"ok": true, "task": task})
 }
 
 func (s *Server) handleTaskDelete(w http.ResponseWriter, r *http.Request) {
@@ -220,15 +233,39 @@ func (s *Server) handleTaskDelete(w http.ResponseWriter, r *http.Request) {
 		ID string `json:"id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	filtered := s.tasks.list[:0]
-	for _, t := range s.tasks.list {
-		if t.ID != body.ID {
-			filtered = append(filtered, t)
-		}
+	if err := s.tasks.Delete(body.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
-	s.tasks.list = filtered
-	_ = s.tasks.Save()
+	s.scheduler.Reload()
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleTaskToggle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID      string `json:"id"`
+		Enabled bool   `json:"enabled"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if err := s.tasks.SetEnabled(body.ID, body.Enabled); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.scheduler.Reload()
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if _, ok := s.tasks.Get(body.ID); !ok {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	go s.scheduler.RunTask(body.ID)
+	writeJSON(w, map[string]any{"ok": true, "message": "任务已触发"})
 }
 
 func (s *Server) handlePluginToggle(w http.ResponseWriter, r *http.Request) {
