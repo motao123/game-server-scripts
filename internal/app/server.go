@@ -34,6 +34,7 @@ type Server struct {
 	monitor   *Monitor
 	alerts    *AlertStore
 	plugins   *PluginManager
+	backups   *BackupManager
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -52,6 +53,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.monitor = NewMonitor()
 	s.alerts = NewAlertStore(filepath.Join(cfg.DataDir, "alert_rules.json"))
 	s.plugins = NewPluginManager(cfg.DataDir)
+	s.backups = NewBackupManager(cfg.BackupDir, s.safeRoot)
 	return s, nil
 }
 
@@ -108,6 +110,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/saves", s.require(s.handleSaves))
 	mux.HandleFunc("/api/saves/download", s.require(s.handleSaveDownload))
 	mux.HandleFunc("/api/saves/backup", s.requirePost(s.handleSaveBackup))
+	mux.HandleFunc("/api/saves/restore", s.requirePost(s.handleSaveRestore))
 	mux.HandleFunc("/api/saves/upload", s.requirePost(s.handleSaveUpload))
 	mux.HandleFunc("/api/saves/delete", s.requirePost(s.handleSaveDelete))
 	mux.HandleFunc("/api/config", s.require(s.handleConfig))
@@ -187,6 +190,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/backup/create-generic", s.requirePost(s.handleBackupCreateGeneric))
 	mux.HandleFunc("/api/backup/restore-generic", s.requirePost(s.handleBackupRestoreGeneric))
 	mux.HandleFunc("/api/backup/delete-file", s.requirePost(s.handleBackupDeleteFile))
+	mux.HandleFunc("/api/backup/download", s.require(s.handleBackupDownload))
 	mux.HandleFunc("/api/rcon/command", s.requirePost(s.handleRCONCommand))
 	mux.HandleFunc("/api/rcon/config", s.require(s.handleRconConfig))
 	mux.HandleFunc("/api/rcon/config/save", s.requirePost(s.handleRconConfigSave))
@@ -342,6 +346,12 @@ func (s *Server) handleSaveDownload(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleSaveBackup(w http.ResponseWriter, r *http.Request) {
 	ok, msg := s.palworld.Backup()
+	writeJSON(w, map[string]any{"ok": ok, "message": msg})
+}
+func (s *Server) handleSaveRestore(w http.ResponseWriter, r *http.Request) {
+	var body struct{ Name string }
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	ok, msg := s.palworld.RestoreSave(body.Name)
 	writeJSON(w, map[string]any{"ok": ok, "message": msg})
 }
 func (s *Server) handleSaveUpload(w http.ResponseWriter, r *http.Request) {

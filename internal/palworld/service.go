@@ -233,6 +233,161 @@ func (s Service) DeleteSave(name string) error {
 	return os.Remove(path)
 }
 
+func (s Service) RestoreSave(name string) (bool, string) {
+	path, err := s.SavePath(name)
+	if err != nil {
+		return false, err.Error()
+	}
+	if _, err := os.Stat(path); err != nil {
+		return false, "备份文件不存在"
+	}
+	tmpDir, err := os.MkdirTemp("", "pal_restore_")
+	if err != nil {
+		return false, err.Error()
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := extractSaveArchive(path, tmpDir); err != nil {
+		return false, err.Error()
+	}
+	src := filepath.Join(tmpDir, "SaveGames")
+	if info, err := os.Stat(src); err != nil || !info.IsDir() {
+		return false, "备份包内无 SaveGames 目录"
+	}
+	if _, err := s.RCON("Save"); err != nil {
+		return false, err.Error()
+	}
+	_ = exec.Command("systemctl", "stop", s.Config.Service).Run()
+	if err := replaceSaveGames(src, s.Config.SaveGamesDir); err != nil {
+		_ = exec.Command("systemctl", "start", s.Config.Service).Run()
+		return false, err.Error()
+	}
+	_ = exec.Command("chown", "-R", "steam:steam", s.Config.SaveGamesDir).Run()
+	_ = exec.Command("systemctl", "start", s.Config.Service).Run()
+	return true, "恢复完成，服务器正在重启"
+}
+
+func extractSaveArchive(src, dest string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("无效的 gzip 备份")
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	cleanDest := filepath.Clean(dest)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("无效的 tar 备份")
+		}
+		cleanName := filepath.Clean(h.Name)
+		if filepath.IsAbs(cleanName) || strings.HasPrefix(cleanName, "..") {
+			return fmt.Errorf("备份包包含不安全路径")
+		}
+		target := filepath.Join(cleanDest, cleanName)
+		if !strings.HasPrefix(filepath.Clean(target), cleanDest+string(os.PathSeparator)) && filepath.Clean(target) != cleanDest {
+			return fmt.Errorf("备份包包含不安全路径")
+		}
+		if h.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, h.FileInfo().Mode()); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, h.FileInfo().Mode())
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(out, tr)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
+}
+
+func replaceSaveGames(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == "banlist.txt" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dst, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return copyDirContents(src, dst)
+}
+
+func copyDirContents(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		from := filepath.Join(src, entry.Name())
+		to := filepath.Join(dst, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if err := os.MkdirAll(to, info.Mode()); err != nil {
+				return err
+			}
+			if err := copyDirContents(from, to); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := copyFile(from, to, info.Mode()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
 func (s Service) Whitelist() []WhitelistEntry {
 	data, err := os.ReadFile(s.Config.WhitelistFile)
 	if err != nil {

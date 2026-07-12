@@ -4,15 +4,17 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 )
+
+var backupPathPartRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]+$`)
 
 type BackupEntry struct {
 	Name string `json:"name"`
@@ -27,36 +29,119 @@ type BackupGroup struct {
 	Source string        `json:"sourcePath"`
 }
 
-func (s *Server) handleBackupGroups(w http.ResponseWriter, r *http.Request) {
-	root := s.cfg.BackupDir
-	entries, err := os.ReadDir(root)
+type BackupMeta struct {
+	SourcePath string `json:"sourcePath"`
+}
+
+type BackupManager struct {
+	root    string
+	allowed func(string) bool
+}
+
+func NewBackupManager(root string, allowed func(string) bool) *BackupManager {
+	return &BackupManager{root: root, allowed: allowed}
+}
+
+func (m *BackupManager) Groups() []BackupGroup {
+	entries, err := os.ReadDir(m.root)
 	if err != nil {
-		writeJSON(w, map[string]any{"groups": []BackupGroup{}})
-		return
+		return []BackupGroup{}
 	}
-	var groups []BackupGroup
+	groups := make([]BackupGroup, 0)
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || !validBackupPathPart(entry.Name()) {
 			continue
 		}
 		group := BackupGroup{Name: entry.Name()}
-		groupDir := filepath.Join(root, entry.Name())
-		meta, _ := os.ReadFile(filepath.Join(groupDir, "data.json"))
-		if strings.Contains(string(meta), "sourcePath") {
-			group.Source = extractJSONValue(string(meta), "sourcePath")
-		}
+		groupDir := filepath.Join(m.root, entry.Name())
+		meta, _ := readBackupMeta(groupDir)
+		group.Source = meta.SourcePath
 		files, _ := os.ReadDir(groupDir)
 		for _, f := range files {
-			if f.IsDir() || !strings.HasSuffix(f.Name(), ".tar.gz") {
+			if f.IsDir() || !validBackupArchiveName(f.Name()) {
 				continue
 			}
-			info, _ := f.Info()
+			info, err := f.Info()
+			if err != nil {
+				continue
+			}
 			group.Files = append(group.Files, BackupEntry{Name: f.Name(), Size: info.Size(), Time: info.ModTime().Unix()})
 			group.Total += info.Size()
 		}
 		groups = append(groups, group)
 	}
-	writeJSON(w, map[string]any{"groups": groups})
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Name < groups[j].Name })
+	return groups
+}
+
+func (m *BackupManager) Create(name, sourcePath string, maxKeep int) (string, error) {
+	if !validBackupPathPart(name) {
+		return "", errBackupName()
+	}
+	if !m.allowed(sourcePath) {
+		return "", errBackupSource()
+	}
+	groupDir := filepath.Join(m.root, name)
+	if err := os.MkdirAll(groupDir, 0755); err != nil {
+		return "", err
+	}
+	data, _ := json.MarshalIndent(BackupMeta{SourcePath: sourcePath}, "", "  ")
+	if err := os.WriteFile(filepath.Join(groupDir, "data.json"), data, 0644); err != nil {
+		return "", err
+	}
+	archive := filepath.Join(groupDir, time.Now().Format("2006-01-02_15-04-05")+".tar.gz")
+	if err := createTarGz(sourcePath, archive); err != nil {
+		return "", err
+	}
+	if maxKeep > 0 {
+		enforceRetention(groupDir, maxKeep)
+	}
+	return archive, nil
+}
+
+func (m *BackupManager) ArchivePath(name, fileName string) (string, error) {
+	if !validBackupPathPart(name) || !validBackupArchiveName(fileName) {
+		return "", errBackupName()
+	}
+	path := filepath.Join(m.root, name, fileName)
+	if !insideRoot(m.root, path) {
+		return "", errBackupName()
+	}
+	return path, nil
+}
+
+func (m *BackupManager) Restore(name, fileName string) (string, error) {
+	groupDir := filepath.Join(m.root, name)
+	if !validBackupPathPart(name) || !insideRoot(m.root, groupDir) {
+		return "", errBackupName()
+	}
+	meta, err := readBackupMeta(groupDir)
+	if err != nil || meta.SourcePath == "" {
+		return "", errBackupTarget()
+	}
+	if !m.allowed(meta.SourcePath) {
+		return "", errBackupSource()
+	}
+	archive, err := m.ArchivePath(name, fileName)
+	if err != nil {
+		return "", err
+	}
+	if err := extractTarGz(archive, filepath.Dir(meta.SourcePath)); err != nil {
+		return "", err
+	}
+	return meta.SourcePath, nil
+}
+
+func (m *BackupManager) Delete(name, fileName string) error {
+	path, err := m.ArchivePath(name, fileName)
+	if err != nil {
+		return err
+	}
+	return os.Remove(path)
+}
+
+func (s *Server) handleBackupGroups(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"groups": s.backups.Groups()})
 }
 
 func (s *Server) handleBackupCreateGeneric(w http.ResponseWriter, r *http.Request) {
@@ -70,25 +155,10 @@ func (s *Server) handleBackupCreateGeneric(w http.ResponseWriter, r *http.Reques
 		writeError(w, 400, "backupName 和 sourcePath 不能为空")
 		return
 	}
-	if !s.safeRoot(body.SourcePath) && body.SourcePath != s.cfg.PalServerDir {
-		writeError(w, 403, "源路径不在允许范围内")
-		return
-	}
-	groupDir := filepath.Join(s.cfg.BackupDir, body.BackupName)
-	if err := os.MkdirAll(groupDir, 0755); err != nil {
+	archive, err := s.backups.Create(body.BackupName, body.SourcePath, body.MaxKeep)
+	if err != nil {
 		writeError(w, 500, err.Error())
 		return
-	}
-	meta := fmt.Sprintf(`{"sourcePath":"%s"}`, body.SourcePath)
-	_ = os.WriteFile(filepath.Join(groupDir, "data.json"), []byte(meta), 0644)
-	ts := time.Now().Format("2006-01-02_15-04-05")
-	archive := filepath.Join(groupDir, ts+".tar.gz")
-	if err := createTarGz(body.SourcePath, archive); err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	if body.MaxKeep > 0 {
-		enforceRetention(groupDir, body.MaxKeep)
 	}
 	writeJSON(w, map[string]any{"ok": true, "archive": archive})
 }
@@ -99,19 +169,12 @@ func (s *Server) handleBackupRestoreGeneric(w http.ResponseWriter, r *http.Reque
 		FileName   string `json:"fileName"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	groupDir := filepath.Join(s.cfg.BackupDir, body.BackupName)
-	meta, _ := os.ReadFile(filepath.Join(groupDir, "data.json"))
-	sourcePath := extractJSONValue(string(meta), "sourcePath")
-	if sourcePath == "" {
-		writeError(w, 400, "无法确定恢复目标路径")
-		return
-	}
-	archive := filepath.Join(groupDir, body.FileName)
-	if err := extractTarGz(archive, filepath.Dir(sourcePath)); err != nil {
+	target, err := s.backups.Restore(body.BackupName, body.FileName)
+	if err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true, "targetPath": sourcePath})
+	writeJSON(w, map[string]any{"ok": true, "targetPath": target})
 }
 
 func (s *Server) handleBackupDeleteFile(w http.ResponseWriter, r *http.Request) {
@@ -120,13 +183,18 @@ func (s *Server) handleBackupDeleteFile(w http.ResponseWriter, r *http.Request) 
 		FileName   string `json:"fileName"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	path := filepath.Join(s.cfg.BackupDir, body.BackupName, body.FileName)
-	if !s.safeRoot(path) {
-		writeError(w, 403, "路径不允许")
+	err := s.backups.Delete(body.BackupName, body.FileName)
+	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+}
+
+func (s *Server) handleBackupDownload(w http.ResponseWriter, r *http.Request) {
+	path, err := s.backups.ArchivePath(r.URL.Query().Get("backupName"), r.URL.Query().Get("fileName"))
+	if err != nil {
+		writeError(w, 400, err.Error())
 		return
 	}
-	err := os.Remove(path)
-	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(path)+`"`)
+	http.ServeFile(w, r, path)
 }
 
 func enforceRetention(groupDir string, maxKeep int) {
@@ -175,6 +243,40 @@ func extractJSONValue(jsonStr, key string) string {
 	}
 	return rest[:end]
 }
+
+func readBackupMeta(groupDir string) (BackupMeta, error) {
+	data, err := os.ReadFile(filepath.Join(groupDir, "data.json"))
+	if err != nil {
+		return BackupMeta{}, err
+	}
+	var meta BackupMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		meta.SourcePath = extractJSONValue(string(data), "sourcePath")
+	}
+	return meta, nil
+}
+
+func validBackupPathPart(name string) bool {
+	return backupPathPartRe.MatchString(name)
+}
+
+func validBackupArchiveName(name string) bool {
+	return strings.HasSuffix(name, ".tar.gz") && validBackupPathPart(strings.TrimSuffix(name, ".tar.gz"))
+}
+
+func insideRoot(root, path string) bool {
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+	return cleanPath == cleanRoot || strings.HasPrefix(cleanPath, cleanRoot+string(os.PathSeparator))
+}
+
+func errBackupName() error   { return &backupError{"备份名称或文件名无效"} }
+func errBackupSource() error { return &backupError{"源路径不在允许范围内"} }
+func errBackupTarget() error { return &backupError{"无法确定恢复目标路径"} }
+
+type backupError struct{ message string }
+
+func (e *backupError) Error() string { return e.message }
 
 func createTarGzFromReader(name string, r io.Reader, w io.Writer) error {
 	gz := gzip.NewWriter(w)
