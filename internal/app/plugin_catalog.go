@@ -8,19 +8,25 @@ import (
 )
 
 type PluginCatalogItem struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	DisplayName  string            `json:"displayName,omitempty"`
-	Version      string            `json:"version"`
-	Description  string            `json:"description"`
-	Author       string            `json:"author"`
-	Homepage     string            `json:"homepage,omitempty"`
-	Entry        string            `json:"entry,omitempty"`
-	Tags         []string          `json:"tags,omitempty"`
-	Capabilities []string          `json:"capabilities,omitempty"`
-	Source       PluginSource      `json:"source,omitempty"`
-	Files        map[string]string `json:"files,omitempty"`
-	Installed    bool              `json:"installed"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	DisplayName      string            `json:"displayName,omitempty"`
+	Version          string            `json:"version"`
+	Description      string            `json:"description"`
+	Author           string            `json:"author"`
+	Homepage         string            `json:"homepage,omitempty"`
+	Entry            string            `json:"entry,omitempty"`
+	Tags             []string          `json:"tags,omitempty"`
+	Capabilities     []string          `json:"capabilities,omitempty"`
+	MinPanelVersion  string            `json:"minPanelVersion,omitempty"`
+	MaxPanelVersion  string            `json:"maxPanelVersion,omitempty"`
+	Source           PluginSource      `json:"source,omitempty"`
+	Files            map[string]string `json:"files,omitempty"`
+	Installed        bool              `json:"installed"`
+	InstalledVersion string            `json:"installedVersion,omitempty"`
+	Upgradable       bool              `json:"upgradable,omitempty"`
+	Compatible       bool              `json:"compatible"`
+	Compatibility    string            `json:"compatibility,omitempty"`
 }
 
 type PluginSource struct {
@@ -32,15 +38,39 @@ type PluginSource struct {
 
 func (s *Server) pluginCatalog() []PluginCatalogItem {
 	catalog := loadPluginCatalog()
-	installed := map[string]bool{}
+	installed := map[string]PluginMeta{}
 	for _, plugin := range s.scanPlugins() {
-		installed[plugin.ID] = true
+		installed[plugin.ID] = plugin
 	}
 	for i := range catalog {
-		catalog[i].Installed = installed[catalog[i].ID]
+		plugin, ok := installed[catalog[i].ID]
+		catalog[i].Installed = ok
+		catalog[i].Compatible, catalog[i].Compatibility = pluginCompatibility(catalog[i])
+		if ok {
+			catalog[i].InstalledVersion = plugin.Version
+			catalog[i].Upgradable = catalog[i].Compatible && compareVersions(catalog[i].Version, plugin.Version) > 0
+		}
 	}
 	sort.Slice(catalog, func(i, j int) bool { return catalog[i].DisplayName < catalog[j].DisplayName })
 	return catalog
+}
+
+func (s *Server) pluginsWithCatalog() []PluginMeta {
+	plugins := s.scanPlugins()
+	catalog := map[string]PluginCatalogItem{}
+	for _, item := range loadPluginCatalog() {
+		catalog[item.ID] = item
+	}
+	for i := range plugins {
+		item, ok := catalog[plugins[i].ID]
+		plugins[i].Compatible = true
+		if ok {
+			plugins[i].MarketVersion = item.Version
+			plugins[i].Compatible, plugins[i].Compatibility = pluginCompatibility(item)
+			plugins[i].Upgradable = plugins[i].Compatible && compareVersions(item.Version, plugins[i].Version) > 0
+		}
+	}
+	return plugins
 }
 
 func loadPluginCatalog() []PluginCatalogItem {

@@ -139,7 +139,7 @@ func detectTools() bool {
 	return true
 }
 func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"plugins": s.scanPlugins(), "enabled": true})
+	writeJSON(w, map[string]any{"plugins": s.pluginsWithCatalog(), "enabled": true})
 }
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{

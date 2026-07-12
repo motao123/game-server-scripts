@@ -13,7 +13,13 @@ import (
 	"time"
 )
 
+const panelVersion = "0.1.0"
+
 func (s *Server) installPluginFromCatalog(item PluginCatalogItem) (PluginMeta, error) {
+	compatible, reason := pluginCompatibility(item)
+	if !compatible {
+		return PluginMeta{}, fmt.Errorf(reason)
+	}
 	dir := filepath.Join(s.cfg.DataDir, "plugins", item.ID)
 	if _, err := os.Stat(dir); err == nil {
 		return PluginMeta{}, fmt.Errorf("插件已安装")
@@ -22,6 +28,64 @@ func (s *Server) installPluginFromCatalog(item PluginCatalogItem) (PluginMeta, e
 		return s.installPluginArchive(item, dir)
 	}
 	return s.installPluginFiles(item, dir)
+}
+
+func (s *Server) upgradePluginFromCatalog(item PluginCatalogItem) (PluginMeta, string, error) {
+	compatible, reason := pluginCompatibility(item)
+	if !compatible {
+		return PluginMeta{}, "", fmt.Errorf(reason)
+	}
+	dir := filepath.Join(s.cfg.DataDir, "plugins", item.ID)
+	oldMeta, err := readPluginMeta(dir)
+	if err != nil {
+		return PluginMeta{}, "", fmt.Errorf("插件未安装")
+	}
+	if compareVersions(item.Version, oldMeta.Version) <= 0 {
+		return PluginMeta{}, "", fmt.Errorf("当前已是最新版本")
+	}
+	enabled := false
+	if _, err := os.Stat(filepath.Join(dir, ".enabled")); err == nil {
+		enabled = true
+	}
+	backup, err := s.backupPluginDir(item.ID)
+	if err != nil {
+		return PluginMeta{}, "", err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return PluginMeta{}, backup, err
+	}
+	meta, err := s.installPluginFromCatalog(item)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		_ = copyPluginDir(backup, dir)
+		return PluginMeta{}, backup, err
+	}
+	if enabled {
+		_ = os.WriteFile(filepath.Join(dir, ".enabled"), []byte("1"), 0644)
+	}
+	return meta, backup, nil
+}
+
+func (s *Server) backupPluginDir(id string) (string, error) {
+	if !validPluginID(id) {
+		return "", fmt.Errorf("插件名称只允许字母数字下划线短横线")
+	}
+	src := filepath.Join(s.cfg.DataDir, "plugins", id)
+	if _, err := os.Stat(src); err != nil {
+		return "", err
+	}
+	base := filepath.Join(s.cfg.DataDir, "plugin_backups", id+"-"+time.Now().Format("20060102150405.000000000"))
+	dst := base
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return "", err
+	}
+	for i := 1; ; i++ {
+		if _, err := os.Stat(dst); os.IsNotExist(err) {
+			break
+		}
+		dst = fmt.Sprintf("%s-%d", base, i)
+	}
+	return dst, copyPluginDir(src, dst)
 }
 
 func (s *Server) installPluginFiles(item PluginCatalogItem, dir string) (PluginMeta, error) {
@@ -139,6 +203,18 @@ func pluginMetaFromCatalog(item PluginCatalogItem) PluginMeta {
 	return PluginMeta{ID: item.ID, Name: item.Name, DisplayName: item.DisplayName, Version: item.Version, Description: item.Description, Author: item.Author, Homepage: item.Homepage, Entry: item.Entry, Tags: item.Tags, Capabilities: item.Capabilities}
 }
 
+func readPluginMeta(dir string) (PluginMeta, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "plugin.json"))
+	if err != nil {
+		return PluginMeta{}, err
+	}
+	var meta PluginMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return PluginMeta{}, err
+	}
+	return meta, nil
+}
+
 func downloadPluginArchive(rawURL, dst string) error {
 	data, err := downloadCatalog(rawURL)
 	if err != nil {
@@ -193,4 +269,93 @@ func pluginFileMode(name string) os.FileMode {
 		return 0755
 	}
 	return 0644
+}
+
+func pluginCompatibility(item PluginCatalogItem) (bool, string) {
+	if item.MinPanelVersion != "" && compareVersions(panelVersion, item.MinPanelVersion) < 0 {
+		return false, "需要面板版本 >= " + item.MinPanelVersion
+	}
+	if item.MaxPanelVersion != "" && compareVersions(panelVersion, item.MaxPanelVersion) > 0 {
+		return false, "需要面板版本 <= " + item.MaxPanelVersion
+	}
+	return true, ""
+}
+
+func compareVersions(a, b string) int {
+	ap := versionParts(a)
+	bp := versionParts(b)
+	for i := 0; i < len(ap) || i < len(bp); i++ {
+		av, bv := 0, 0
+		if i < len(ap) {
+			av = ap[i]
+		}
+		if i < len(bp) {
+			bv = bp[i]
+		}
+		if av > bv {
+			return 1
+		}
+		if av < bv {
+			return -1
+		}
+	}
+	return 0
+}
+
+func versionParts(v string) []int {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	fields := strings.FieldsFunc(v, func(r rune) bool { return r == '.' || r == '-' || r == '_' })
+	out := make([]int, 0, len(fields))
+	for _, field := range fields {
+		n := 0
+		for _, r := range field {
+			if r < '0' || r > '9' {
+				break
+			}
+			n = n*10 + int(r-'0')
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func copyPluginDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return os.MkdirAll(dst, 0755)
+		}
+		target := filepath.Join(dst, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
 }

@@ -1,5 +1,5 @@
 import { Button, Card, Empty, Form, Input, List, Modal, Space, Switch, Tabs, Tag, message } from 'antd'
-import { CloudDownloadOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons'
+import { CloudDownloadOutlined, DeleteOutlined, PlusOutlined, SyncOutlined } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
@@ -37,6 +37,9 @@ export default function PluginsPage() {
   async function install(id: string) {
     try { await api('/api/plugins/install', { method: 'POST', body: { id } }); message.success('已安装'); load() } catch (e: any) { message.error(e.message) }
   }
+  async function upgrade(id: string) {
+    try { await api('/api/plugins/upgrade', { method: 'POST', body: { id } }); message.success('已升级'); load() } catch (e: any) { message.error(e.message) }
+  }
   function tags(items?: string[]) {
     return (items || []).map(item => <Tag key={item}>{item}</Tag>)
   }
@@ -49,10 +52,11 @@ export default function PluginsPage() {
             <List dataSource={plugins} renderItem={(p: any) => (
               <List.Item actions={[
                 <Switch checked={p.enabled} onChange={(v) => toggle(p.id, v)} />,
+                p.upgradable ? <Button icon={<SyncOutlined />} onClick={() => upgrade(p.id)}>升级</Button> : null,
                 <Button danger icon={<DeleteOutlined />} onClick={() => del(p.id)}>删除</Button>,
-              ]}>
+              ].filter(Boolean)}>
                 <List.Item.Meta
-                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.enabled && <Tag color="green">启用</Tag>} {tags(p.tags)}</Space>}
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.marketVersion && <Tag color={p.upgradable ? 'orange' : 'blue'}>市场 {p.marketVersion}</Tag>} {p.enabled && <Tag color="green">启用</Tag>} {p.upgradable && <Tag color="orange">可升级</Tag>} {!p.compatible && <Tag color="red">不兼容</Tag>} {tags(p.tags)}</Space>}
                   description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'} · {p.path}</span></Space>}
                 />
               </List.Item>
@@ -61,11 +65,11 @@ export default function PluginsPage() {
           { key: 'catalog', label: '插件市场', children: catalog.length === 0 ? <Empty description="未发现市场插件" /> : (
             <List dataSource={catalog} renderItem={(p: any) => (
               <List.Item actions={[
-                <Button type="primary" icon={<CloudDownloadOutlined />} disabled={p.installed} onClick={() => install(p.id)}>{p.installed ? '已安装' : '安装'}</Button>,
+                <Button type="primary" icon={<CloudDownloadOutlined />} disabled={p.installed || p.compatible === false} onClick={() => install(p.id)}>{p.installed ? '已安装' : p.compatible === false ? '不兼容' : '安装'}</Button>,
               ]}>
                 <List.Item.Meta
-                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.source?.url && <Tag color="purple">远程包</Tag>} {tags(p.tags)} {tags(p.capabilities)}</Space>}
-                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'}</span></Space>}
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.installedVersion && <Tag color="blue">已装 {p.installedVersion}</Tag>} {p.upgradable && <Tag color="orange">可升级</Tag>} {p.source?.url && <Tag color="purple">远程包</Tag>} {p.compatible === false && <Tag color="red">不兼容</Tag>} {tags(p.tags)} {tags(p.capabilities)}</Space>}
+                  description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'}{p.compatibility ? ` · ${p.compatibility}` : ''}</span></Space>}
                 />
               </List.Item>
             )} />

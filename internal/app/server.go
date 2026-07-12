@@ -172,6 +172,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/plugins/catalog", s.require(s.handlePluginCatalog))
 	mux.HandleFunc("/api/plugins/create", s.requirePost(s.handlePluginCreate))
 	mux.HandleFunc("/api/plugins/install", s.requirePost(s.handlePluginInstall))
+	mux.HandleFunc("/api/plugins/upgrade", s.requirePost(s.handlePluginUpgrade))
 	mux.HandleFunc("/api/plugins/config", s.require(s.handlePluginConfig))
 	mux.HandleFunc("/api/plugins/delete", s.requirePost(s.handlePluginDelete))
 	mux.HandleFunc("/api/plugins/toggle", s.requirePost(s.handlePluginToggle))

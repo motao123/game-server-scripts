@@ -8,18 +8,22 @@ import (
 )
 
 type PluginMeta struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	DisplayName  string   `json:"displayName,omitempty"`
-	Version      string   `json:"version"`
-	Description  string   `json:"description"`
-	Author       string   `json:"author"`
-	Homepage     string   `json:"homepage,omitempty"`
-	Entry        string   `json:"entry,omitempty"`
-	Tags         []string `json:"tags,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
-	Enabled      bool     `json:"enabled"`
-	Path         string   `json:"path"`
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	DisplayName   string   `json:"displayName,omitempty"`
+	Version       string   `json:"version"`
+	Description   string   `json:"description"`
+	Author        string   `json:"author"`
+	Homepage      string   `json:"homepage,omitempty"`
+	Entry         string   `json:"entry,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
+	Enabled       bool     `json:"enabled"`
+	Path          string   `json:"path"`
+	MarketVersion string   `json:"marketVersion,omitempty"`
+	Upgradable    bool     `json:"upgradable,omitempty"`
+	Compatible    bool     `json:"compatible"`
+	Compatibility string   `json:"compatibility,omitempty"`
 }
 
 func (s *Server) scanPlugins() []PluginMeta {

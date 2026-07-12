@@ -58,11 +58,16 @@ func (s *Server) handlePluginDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dir := filepath.Join(s.cfg.DataDir, "plugins", body.Name)
+	backup, err := s.backupPluginDir(body.Name)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		writeError(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, map[string]any{"ok": true})
+	writeJSON(w, map[string]any{"ok": true, "backup": backup})
 }
 
 func (s *Server) handlePluginCatalog(w http.ResponseWriter, r *http.Request) {
@@ -96,6 +101,35 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true, "plugin": meta})
+}
+
+func (s *Server) handlePluginUpgrade(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if !validPluginID(body.ID) {
+		writeError(w, 400, "插件名称只允许字母数字下划线短横线")
+		return
+	}
+	var found *PluginCatalogItem
+	for _, item := range s.pluginCatalog() {
+		if item.ID == body.ID {
+			copy := item
+			found = &copy
+			break
+		}
+	}
+	if found == nil {
+		writeError(w, 404, "插件不存在")
+		return
+	}
+	meta, backup, err := s.upgradePluginFromCatalog(*found)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "plugin": meta, "backup": backup})
 }
 
 func (s *Server) handlePluginConfig(w http.ResponseWriter, r *http.Request) {
