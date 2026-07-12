@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -70,6 +69,13 @@ func gameConfigTemplates() []GameConfigTemplate {
 			{Key: "password", Label: "服务器密码", Type: "password", Default: ""},
 			{Key: "motd", Label: "欢迎语", Type: "text", Default: ""},
 		}},
+		{ID: "project-zomboid-start", Name: "Project Zomboid servertest.ini", InstanceType: "project-zomboid", File: "Zomboid/Server/servertest.ini", Format: "properties", Fields: []GameConfigField{
+			{Key: "PublicName", Label: "服务器名称", Type: "text", Default: "Project Zomboid Server", Required: true},
+			{Key: "DefaultPort", Label: "端口", Type: "number", Default: "16261", Required: true, Min: "1", Max: "65535"},
+			{Key: "MaxPlayers", Label: "最大玩家数", Type: "number", Default: "16", Required: true, Min: "1", Max: "100"},
+			{Key: "Password", Label: "服务器密码", Type: "password", Default: ""},
+			{Key: "PauseEmpty", Label: "无人暂停", Type: "bool", Default: "true"},
+		}},
 	}
 }
 
@@ -104,7 +110,7 @@ func (s *Server) handleGameConfigRead(w http.ResponseWriter, r *http.Request) {
 	}
 	values := map[string]string{}
 	if data, err := os.ReadFile(path); err == nil {
-		values = parseKeyValueConfig(string(data))
+		values = parseGameConfig(string(data), tmpl.Format)
 	}
 	for _, field := range tmpl.Fields {
 		if _, ok := values[field.Key]; !ok {
@@ -136,7 +142,7 @@ func (s *Server) handleGameConfigSave(w http.ResponseWriter, r *http.Request) {
 	content := ""
 	if data, err := os.ReadFile(path); err == nil {
 		content = string(data)
-		current = parseKeyValueConfig(content)
+		current = parseGameConfig(content, tmpl.Format)
 	}
 	for key, value := range body.Values {
 		if allowed[key] {
@@ -151,7 +157,7 @@ func (s *Server) handleGameConfigSave(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := os.WriteFile(path, []byte(formatKeyValueConfig(content, current, tmpl.Fields)), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(formatGameConfig(content, current, tmpl.Fields, tmpl.Format)), 0644); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -184,27 +190,6 @@ func (s *Server) resolveGameConfig(instanceID, templateID string) (Instance, Gam
 		return Instance{}, GameConfigTemplate{}, "", fmt.Errorf("路径不允许访问")
 	}
 	return inst, tmpl, path, nil
-}
-
-func parseKeyValueConfig(content string) map[string]string {
-	values := map[string]string{}
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		idx := strings.IndexAny(line, "=")
-		if idx < 0 {
-			continue
-		}
-		key := strings.TrimSpace(line[:idx])
-		value := strings.TrimSpace(line[idx+1:])
-		if key != "" {
-			values[key] = value
-		}
-	}
-	return values
 }
 
 func validateGameConfigValue(field GameConfigField, value string) error {
@@ -249,66 +234,4 @@ func validateGameConfigValue(field GameConfigField, value string) error {
 		return fmt.Errorf("%s 不是有效选项", field.Label)
 	}
 	return nil
-}
-
-func formatKeyValueConfig(existing string, values map[string]string, fields []GameConfigField) string {
-	if strings.TrimSpace(existing) == "" {
-		return formatKeyValueDefaults(values, fields)
-	}
-	seen := map[string]bool{}
-	var b strings.Builder
-	scanner := bufio.NewScanner(strings.NewReader(existing))
-	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
-			b.WriteString(line)
-			b.WriteByte('\n')
-			continue
-		}
-		idx := strings.Index(trimmed, "=")
-		if idx < 0 {
-			b.WriteString(line)
-			b.WriteByte('\n')
-			continue
-		}
-		key := strings.TrimSpace(trimmed[:idx])
-		if value, ok := values[key]; ok {
-			b.WriteString(key)
-			b.WriteByte('=')
-			b.WriteString(value)
-			b.WriteByte('\n')
-			seen[key] = true
-			continue
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	for _, field := range fields {
-		if seen[field.Key] {
-			continue
-		}
-		if value, ok := values[field.Key]; ok {
-			b.WriteString(field.Key)
-			b.WriteByte('=')
-			b.WriteString(value)
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
-}
-
-func formatKeyValueDefaults(values map[string]string, fields []GameConfigField) string {
-	var b strings.Builder
-	for _, field := range fields {
-		value, ok := values[field.Key]
-		if !ok {
-			value = field.Default
-		}
-		b.WriteString(field.Key)
-		b.WriteByte('=')
-		b.WriteString(value)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
