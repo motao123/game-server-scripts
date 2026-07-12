@@ -18,8 +18,16 @@ type PluginCatalogItem struct {
 	Entry        string            `json:"entry,omitempty"`
 	Tags         []string          `json:"tags,omitempty"`
 	Capabilities []string          `json:"capabilities,omitempty"`
+	Source       PluginSource      `json:"source,omitempty"`
 	Files        map[string]string `json:"files,omitempty"`
 	Installed    bool              `json:"installed"`
+}
+
+type PluginSource struct {
+	Type        string `json:"type,omitempty"`
+	URL         string `json:"url,omitempty"`
+	SHA256      string `json:"sha256,omitempty"`
+	ArchiveType string `json:"archiveType,omitempty"`
 }
 
 func (s *Server) pluginCatalog() []PluginCatalogItem {

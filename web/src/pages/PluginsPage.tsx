@@ -64,7 +64,7 @@ export default function PluginsPage() {
                 <Button type="primary" icon={<CloudDownloadOutlined />} disabled={p.installed} onClick={() => install(p.id)}>{p.installed ? '已安装' : '安装'}</Button>,
               ]}>
                 <List.Item.Meta
-                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {tags(p.tags)} {tags(p.capabilities)}</Space>}
+                  title={<Space wrap>{p.displayName || p.name} {p.version && <Tag>{p.version}</Tag>} {p.source?.url && <Tag color="purple">远程包</Tag>} {tags(p.tags)} {tags(p.capabilities)}</Space>}
                   description={<Space direction="vertical" size={2}><span>{p.description || '-'}</span><span style={{ color: '#666' }}>作者: {p.author || '-'}</span></Space>}
                 />
               </List.Item>

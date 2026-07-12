@@ -90,33 +90,10 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "插件不存在")
 		return
 	}
-	dir := filepath.Join(s.cfg.DataDir, "plugins", found.ID)
-	if _, err := os.Stat(dir); err == nil {
-		writeError(w, 409, "插件已安装")
-		return
-	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	meta, err := s.installPluginFromCatalog(*found)
+	if err != nil {
 		writeError(w, 500, err.Error())
 		return
-	}
-	meta := PluginMeta{
-		ID: found.ID, Name: found.Name, DisplayName: found.DisplayName, Version: found.Version,
-		Description: found.Description, Author: found.Author, Homepage: found.Homepage,
-		Entry: found.Entry, Tags: found.Tags, Capabilities: found.Capabilities,
-	}
-	data, _ := json.MarshalIndent(meta, "", "  ")
-	if err := os.WriteFile(filepath.Join(dir, "plugin.json"), data, 0644); err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	for name, content := range found.Files {
-		if !validPluginFileName(name) {
-			continue
-		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0644); err != nil {
-			writeError(w, 500, err.Error())
-			return
-		}
 	}
 	writeJSON(w, map[string]any{"ok": true, "plugin": meta})
 }
