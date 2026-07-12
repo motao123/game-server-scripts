@@ -157,6 +157,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/upload", s.require(s.handleFilesUpload))
 	mux.HandleFunc("/api/files/upload-chunk", s.requirePost(s.handleFilesUploadChunk))
 	mux.HandleFunc("/api/files/upload-complete", s.requirePost(s.handleFilesUploadComplete))
+	mux.HandleFunc("/api/files/conflicts", s.requirePost(s.handleFilesConflicts))
+	mux.HandleFunc("/api/files/search", s.require(s.handleFilesSearch))
 	mux.HandleFunc("/api/files/tasks", s.require(s.handleFileTasks))
 	mux.HandleFunc("/api/files/delete", s.requirePost(s.handleFilesDelete))
 	mux.HandleFunc("/api/files/mkdir", s.requirePost(s.handleFilesMkdir))

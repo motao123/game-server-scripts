@@ -149,6 +149,7 @@ func (s *Server) handleFilesUploadComplete(w http.ResponseWriter, r *http.Reques
 		UploadID    string `json:"uploadId"`
 		FileName    string `json:"fileName"`
 		TotalChunks int    `json:"totalChunks"`
+		Overwrite   bool   `json:"overwrite"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if !s.safeRoot(body.Path) {
@@ -166,7 +167,14 @@ func (s *Server) handleFilesUploadComplete(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusForbidden, "路径不允许访问")
 		return
 	}
+	if err := ensureNoFileConflict(target, body.Overwrite); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	task := s.fileTasks.Add("upload", fileName, func(update func(int, string)) error {
+		if err := ensureNoFileConflict(target, body.Overwrite); err != nil {
+			return err
+		}
 		return mergeUploadChunks(filepath.Join(s.cfg.DataDir, "upload_chunks", uploadID), target, body.TotalChunks, update)
 	})
 	writeJSON(w, map[string]any{"ok": true, "task": task})

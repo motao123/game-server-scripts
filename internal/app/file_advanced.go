@@ -16,28 +16,50 @@ var (
 )
 
 func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Src, Dst string }
+	var body struct {
+		Src       string `json:"src"`
+		Dst       string `json:"dst"`
+		Overwrite bool   `json:"overwrite"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if !s.safeRoot(body.Src) || !s.safeRoot(filepath.Dir(body.Dst)) {
 		writeError(w, 403, "路径不允许访问")
 		return
 	}
+	if err := ensureNoFileConflict(body.Dst, body.Overwrite); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	task := s.fileTasks.Add("copy", filepath.Base(body.Src), func(update func(int, string)) error {
 		update(10, "复制中")
+		if err := ensureNoFileConflict(body.Dst, body.Overwrite); err != nil {
+			return err
+		}
 		return copyPath(body.Src, body.Dst)
 	})
 	writeJSON(w, map[string]any{"ok": true, "task": task})
 }
 
 func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
-	var body struct{ Src, Dst string }
+	var body struct {
+		Src       string `json:"src"`
+		Dst       string `json:"dst"`
+		Overwrite bool   `json:"overwrite"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if !s.safeRoot(body.Src) || !s.safeRoot(filepath.Dir(body.Dst)) {
 		writeError(w, 403, "路径不允许访问")
 		return
 	}
+	if err := ensureNoFileConflict(body.Dst, body.Overwrite); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
 	task := s.fileTasks.Add("move", filepath.Base(body.Src), func(update func(int, string)) error {
 		update(20, "移动中")
+		if err := ensureNoFileConflict(body.Dst, body.Overwrite); err != nil {
+			return err
+		}
 		return os.Rename(body.Src, body.Dst)
 	})
 	writeJSON(w, map[string]any{"ok": true, "task": task})

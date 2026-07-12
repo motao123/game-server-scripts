@@ -7,6 +7,7 @@ import { api } from '../api'
 
 type FileItem = { name: string; path: string; isDir: boolean; size: number; modTime: string }
 type FileTask = { id: string; type: string; name: string; status: string; progress: number; message?: string; error?: string; updatedAt: string }
+type SearchItem = { name: string; path: string; isDir: boolean; size: number }
 
 export default function FilesPage() {
   const [path, setPath] = useState('')
@@ -21,6 +22,9 @@ export default function FilesPage() {
   const [favorites, setFavorites] = useState<string[]>([])
   const [tasks, setTasks] = useState<FileTask[]>([])
   const [uploading, setUploading] = useState<{ name: string; progress: number } | null>(null)
+  const [searchResults, setSearchResults] = useState<SearchItem[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searchTruncated, setSearchTruncated] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function load(p?: string) {
@@ -47,12 +51,19 @@ export default function FilesPage() {
     if (!clipboard) return
     const name = clipboard.path.split('/').pop()
     const dst = path + '/' + name
-    try {
-      if (clipboard.op === 'copy') await api('/api/files/copy', { method: 'POST', body: { src: clipboard.path, dst } })
-      else await api('/api/files/move', { method: 'POST', body: { src: clipboard.path, dst } })
+    const run = async (overwrite = false) => {
+      if (clipboard.op === 'copy') await api('/api/files/copy', { method: 'POST', body: { src: clipboard.path, dst, overwrite } })
+      else await api('/api/files/move', { method: 'POST', body: { src: clipboard.path, dst, overwrite } })
       message.success(clipboard.op === 'copy' ? '已加入复制任务' : '已加入移动任务')
-      setClipboard(null); load()
-      loadTasks()
+      setClipboard(null); load(); loadTasks()
+    }
+    try {
+      const check = await api<{ conflicts: string[] }>('/api/files/conflicts', { method: 'POST', body: { items: [clipboard.path], dest: path } })
+      if ((check.conflicts || []).length) {
+        Modal.confirm({ title: '目标已存在', content: <div>{check.conflicts.map(p => <div key={p}>{p}</div>)}</div>, okText: '覆盖', cancelText: '取消', onOk: () => run(true) })
+      } else {
+        await run(false)
+      }
     } catch (e: any) { message.error(e.message) }
   }
   async function showPermissions(item: FileItem) {
@@ -170,11 +181,33 @@ export default function FilesPage() {
         if (!d.ok) throw new Error(d.error || '分片上传失败')
         setUploading({ name: file.name, progress: Math.round(((i + 1) / totalChunks) * 90) })
       }
-      await api('/api/files/upload-complete', { method: 'POST', body: { path, uploadId, fileName: file.name, totalChunks } })
-      message.success(`已加入合并任务 ${file.name}`)
-      setUploading(null)
-      loadTasks()
+      const finish = async (overwrite = false) => {
+        await api('/api/files/upload-complete', { method: 'POST', body: { path, uploadId, fileName: file.name, totalChunks, overwrite } })
+        message.success(`已加入合并任务 ${file.name}`)
+        setUploading(null)
+        loadTasks()
+      }
+      const check = await api<{ conflicts: string[] }>('/api/files/conflicts', { method: 'POST', body: { items: [path + '/' + file.name], dest: path } })
+      if ((check.conflicts || []).length) {
+        Modal.confirm({ title: '文件已存在', content: file.name, okText: '覆盖', cancelText: '取消', onOk: () => finish(true), onCancel: () => setUploading(null) })
+      } else {
+        await finish(false)
+      }
     } catch (e: any) { setUploading(null); message.error(e.message) }
+  }
+
+  async function runSearch(value: string) {
+    setSearch(value)
+    setSearchResults([])
+    setSearchTruncated(false)
+    if (!value.trim()) return
+    setSearching(true)
+    try {
+      const d = await api<{ items: SearchItem[]; truncated: boolean }>(`/api/files/search?path=${encodeURIComponent(path)}&q=${encodeURIComponent(value.trim())}`)
+      setSearchResults(d.items || [])
+      setSearchTruncated(!!d.truncated)
+    } catch (e: any) { message.error(e.message) }
+    finally { setSearching(false) }
   }
 
   function contextMenu(item: FileItem) {
@@ -237,8 +270,11 @@ export default function FilesPage() {
             </span>
           ))}
         </Space>
-        <Input.Search placeholder="搜索当前目录" value={search} onChange={e => setSearch(e.target.value)} style={{ marginTop: 8 }} allowClear />
+        <Input.Search placeholder="搜索当前目录，回车后递归搜索" value={search} onChange={e => { setSearch(e.target.value); if (!e.target.value) setSearchResults([]) }} onSearch={runSearch} loading={searching} style={{ marginTop: 8 }} allowClear />
       </Card>
+      {searchResults.length > 0 && <Card title="搜索结果" extra={searchTruncated ? <Tag color="orange">结果已截断</Tag> : undefined}>
+        <ListSearchResults items={searchResults} open={open} />
+      </Card>}
       {(uploading || tasks.length > 0) && <Card title="后台文件任务" extra={<Button size="small" onClick={loadTasks}>刷新</Button>}>
         {uploading && <div style={{ marginBottom: 12 }}>
           <Space style={{ width: '100%', justifyContent: 'space-between' }}><span>{uploading.name}</span><Tag color="blue">上传分片</Tag></Space>
@@ -319,6 +355,20 @@ function getLanguage(path: string): string {
     cfg: 'ini', conf: 'ini', properties: 'ini', txt: 'plaintext',
   }
   return map[ext || ''] || 'plaintext'
+}
+
+function ListSearchResults({ items, open }: { items: SearchItem[]; open: (item: FileItem) => void }) {
+  return <Table
+    rowKey="path"
+    dataSource={items}
+    pagination={{ pageSize: 8 }}
+    size="small"
+    columns={[
+      { title: '名称', dataIndex: 'name', render: (name: string, record: SearchItem) => <Space><span>{record.isDir ? '📁' : '📄'}</span><a onClick={() => open({ ...record, modTime: '' })}>{name}</a></Space> },
+      { title: '路径', dataIndex: 'path' },
+      { title: '大小', dataIndex: 'size', width: 100, render: (s: number, r: SearchItem) => r.isDir ? '-' : `${(s / 1024).toFixed(1)} KB` },
+    ]}
+  />
 }
 
 function taskLabel(type: string): string {
