@@ -1,6 +1,11 @@
 package app
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
 
 func TestSystemctlStartService(t *testing.T) {
 	tests := []struct {
@@ -23,5 +28,32 @@ func TestSystemctlStartService(t *testing.T) {
 				t.Fatalf("systemctlStartService(%q) = %q, %v; want %q, %v", tt.command, got, ok, tt.want, tt.ok)
 			}
 		})
+	}
+}
+
+func TestValidateStartCommandFile(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "start.sh")
+	mode := os.FileMode(0755)
+	if runtime.GOOS == "windows" {
+		mode = 0644
+	}
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"), mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStartCommandFile(dir, "./start.sh --flag"); err != nil {
+		t.Fatalf("expected existing script to pass: %v", err)
+	}
+	if err := validateStartCommandFile(dir, "runuser -u steam -- ./start.sh --flag"); err != nil {
+		t.Fatalf("expected runuser wrapped script to pass: %v", err)
+	}
+	if err := validateStartCommandFile(dir, "./missing.sh"); err == nil {
+		t.Fatal("expected missing script to fail")
+	}
+	if err := validateStartCommandFile(dir, "runuser -u steam -- ./missing.sh"); err == nil {
+		t.Fatal("expected missing runuser wrapped script to fail")
+	}
+	if err := validateStartCommandFile(dir, "java -jar server.jar"); err != nil {
+		t.Fatalf("expected PATH command to skip file validation: %v", err)
 	}
 }

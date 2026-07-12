@@ -92,6 +92,18 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 		task.fail(err)
 		return
 	}
+	if game.ID == "palworld" {
+		if err := ensureSystemUser("steam"); err != nil {
+			task.appendOutput(fmt.Sprintf("创建 steam 用户失败: %v\n", err))
+			task.fail(err)
+			return
+		}
+		if err := os.Chown(path, userID("steam"), groupID("steam")); err != nil {
+			task.appendOutput(fmt.Sprintf("设置安装目录权限失败: %v\n", err))
+			task.fail(err)
+			return
+		}
+	}
 	if game.ID == "minecraft-java" {
 		if err := m.deployMinecraftJava(task, path, options); err != nil {
 			task.fail(err)
@@ -128,7 +140,7 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 		realSteamcmd = resolved
 	}
 	steamcmdDir := filepath.Dir(realSteamcmd)
-	cmdStr := fmt.Sprintf("%s +login anonymous +app_update %d validate +quit", realSteamcmd, game.AppID)
+	cmdStr := fmt.Sprintf("%s +force_install_dir %s +login anonymous +app_update %d validate +quit", shellQuote(realSteamcmd), shellQuote(path), game.AppID)
 	task.appendOutput(fmt.Sprintf("执行: %s\n", cmdStr))
 
 	cmd := exec.Command("bash", "-c", cmdStr)
@@ -160,6 +172,18 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 		return
 	}
 
+	if err := validateDeployedGame(game.ID, path); err != nil {
+		task.appendOutput(fmt.Sprintf("部署结果校验失败: %v\n", err))
+		task.fail(err)
+		return
+	}
+	if game.ID == "palworld" {
+		if err := chownRecursive(path, "steam"); err != nil {
+			task.appendOutput(fmt.Sprintf("设置 Palworld 文件属主失败: %v\n", err))
+			task.fail(err)
+			return
+		}
+	}
 	task.appendOutput("部署完成\n")
 	m.createInstance(task, game, path, instances)
 	task.succeed()
@@ -175,7 +199,7 @@ func (m *DeployManager) createInstance(task *DeployTask, game GameTemplate, path
 	}
 	switch game.ID {
 	case "palworld":
-		inst.StartCommand = "./PalServer.sh"
+		inst.StartCommand = "runuser -u steam -- ./PalServer.sh"
 		inst.StopCommand = "stop"
 	case "minecraft-java":
 		inst.StartCommand = "./start.sh"
@@ -195,6 +219,66 @@ func (m *DeployManager) createInstance(task *DeployTask, game GameTemplate, path
 	task.InstanceID = created.ID
 	task.mu.Unlock()
 	task.appendOutput(fmt.Sprintf("已创建实例: %s (ID: %s)\n", created.Name, created.ID))
+}
+
+func validateDeployedGame(gameID, path string) error {
+	switch gameID {
+	case "palworld":
+		if fileExists(filepath.Join(path, "PalServer.sh")) || fileExists(filepath.Join(path, "PalServer-Linux-Test")) {
+			return nil
+		}
+		return fmt.Errorf("Palworld 服务端文件不完整，缺少 PalServer.sh 或 PalServer-Linux-Test")
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func ensureSystemUser(name string) error {
+	if _, err := exec.LookPath("id"); err != nil {
+		return err
+	}
+	if exec.Command("id", "-u", name).Run() == nil {
+		return nil
+	}
+	if _, err := exec.LookPath("useradd"); err != nil {
+		return err
+	}
+	return exec.Command("useradd", "--system", "--create-home", "--shell", "/usr/sbin/nologin", name).Run()
+}
+
+func userID(name string) int {
+	uid, err := exec.Command("id", "-u", name).Output()
+	if err != nil {
+		return -1
+	}
+	var id int
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(uid)), "%d", &id)
+	return id
+}
+
+func groupID(name string) int {
+	gid, err := exec.Command("id", "-g", name).Output()
+	if err != nil {
+		return -1
+	}
+	var id int
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(gid)), "%d", &id)
+	return id
+}
+
+func chownRecursive(path, user string) error {
+	if _, err := exec.LookPath("chown"); err != nil {
+		return err
+	}
+	return exec.Command("chown", "-R", user+":"+user, path).Run()
 }
 
 func (t *DeployTask) appendOutput(s string) {

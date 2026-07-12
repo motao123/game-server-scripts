@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -49,6 +50,10 @@ func (r *InstanceRuntime) Start(inst Instance) (InstanceStartResult, error) {
 	}
 	if svc, ok := systemctlStartService(cmd); ok {
 		return r.startSystemd(inst, svc)
+	}
+	if err := validateStartCommandFile(inst.WorkingDirectory, cmd); err != nil {
+		r.store.SetStatus(inst.ID, "error")
+		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: err.Error()}
 	}
 	r.store.SetStatus(inst.ID, "starting")
 
@@ -235,6 +240,46 @@ func systemdActive(service string) bool {
 		return false
 	}
 	return exec.Command("systemctl", "is-active", "--quiet", service).Run() == nil
+}
+
+func validateStartCommandFile(workingDirectory, command string) error {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return nil
+	}
+	bin := commandExecutable(fields)
+	if bin == "" {
+		return nil
+	}
+	if strings.ContainsAny(bin, `;&|$<>`) {
+		return nil
+	}
+	var path string
+	if strings.HasPrefix(bin, "./") {
+		path = filepath.Join(workingDirectory, strings.TrimPrefix(bin, "./"))
+	} else if filepath.IsAbs(bin) {
+		path = bin
+	} else {
+		return nil
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("启动文件不存在: %s", path)
+	}
+	if st.IsDir() {
+		return fmt.Errorf("启动文件是目录: %s", path)
+	}
+	if runtime.GOOS != "windows" && st.Mode()&0111 == 0 {
+		return fmt.Errorf("启动文件不可执行: %s", path)
+	}
+	return nil
+}
+
+func commandExecutable(fields []string) string {
+	if len(fields) >= 5 && fields[0] == "runuser" && fields[1] == "-u" && fields[3] == "--" {
+		return fields[4]
+	}
+	return fields[0]
 }
 
 type instanceRuntimeError struct {

@@ -34,7 +34,7 @@ func NewInstanceStore(path string) *InstanceStore {
 	s := &InstanceStore{path: path}
 	_ = s.Load()
 	if len(s.list) == 0 {
-		s.list = append(s.list, Instance{ID: "palworld-default", Name: "Palworld", Description: "Palworld 专用服务器", WorkingDirectory: "/home/steam/Steam/steamapps/common/PalServer", StartCommand: "./PalServer.sh", StopCommand: "stop", Status: "unknown", InstanceType: "palworld", CreatedAt: time.Now().Format(time.RFC3339)})
+		s.list = append(s.list, Instance{ID: "palworld-default", Name: "Palworld", Description: "Palworld 专用服务器", WorkingDirectory: "/home/steam/Steam/steamapps/common/PalServer", StartCommand: "runuser -u steam -- ./PalServer.sh", StopCommand: "stop", Status: "unknown", InstanceType: "palworld", CreatedAt: time.Now().Format(time.RFC3339)})
 	}
 	return s
 }
