@@ -27,6 +27,7 @@ type Server struct {
 	instances *InstanceStore
 	tasks     *TaskStore
 	terminal  *terminal.Manager
+	runtime   *InstanceRuntime
 	scheduler *Scheduler
 	installs  *InstallManager
 	deploys   *DeployManager
@@ -46,6 +47,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 		tasks:     NewTaskStore(filepath.Join(cfg.DataDir, "scheduled_tasks.json")),
 		terminal:  terminal.NewManager(),
 	}
+	s.runtime = NewInstanceRuntime(s.instances)
 	s.scheduler = NewScheduler(s)
 	s.installs = NewInstallManager()
 	s.deploys = NewDeployManager()
