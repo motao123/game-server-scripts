@@ -15,16 +15,32 @@ import (
 )
 
 type GameTemplate struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Type        string   `json:"type"`
-	Description string   `json:"description"`
-	Ports       []int    `json:"ports"`
-	Tags        []string `json:"tags"`
-	DefaultPath string   `json:"defaultPath"`
-	AppID       int      `json:"appId,omitempty"`
-	ServerTypes []string `json:"serverTypes,omitempty"`
-	Version     string   `json:"version,omitempty"`
+	ID           string     `json:"id"`
+	SourceKey    string     `json:"sourceKey,omitempty"`
+	Name         string     `json:"name"`
+	NameCN       string     `json:"nameCN,omitempty"`
+	Type         string     `json:"type"`
+	Description  string     `json:"description"`
+	Tip          string     `json:"tip,omitempty"`
+	Ports        []int      `json:"ports"`
+	PortMappings []GamePort `json:"portMappings,omitempty"`
+	Tags         []string   `json:"tags"`
+	DefaultPath  string     `json:"defaultPath"`
+	AppID        int        `json:"appId,omitempty"`
+	Systems      []string   `json:"systems,omitempty"`
+	SystemInfo   []string   `json:"systemInfo,omitempty"`
+	Image        string     `json:"image,omitempty"`
+	StoreURL     string     `json:"storeUrl,omitempty"`
+	DocsURL      string     `json:"docsUrl,omitempty"`
+	MemoryGB     int        `json:"memoryGB,omitempty"`
+	ServerTypes  []string   `json:"serverTypes,omitempty"`
+	Version      string     `json:"version,omitempty"`
+}
+
+type GamePort struct {
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol"`
+	Name     string `json:"name,omitempty"`
 }
 
 func builtinGames() []GameTemplate {
@@ -38,10 +54,10 @@ func builtinGames() []GameTemplate {
 }
 
 func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"games": builtinGames()})
+	writeJSON(w, map[string]any{"games": s.games()})
 }
 func (s *Server) handleSteamcmdStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"steamcmd": lookPath("steamcmd"), "templates": len(builtinGames())})
+	writeJSON(w, map[string]any{"steamcmd": lookPath("steamcmd"), "templates": len(s.games())})
 }
 func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request) {
 	var body struct {
@@ -52,9 +68,10 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	var game *GameTemplate
-	for i := range builtinGames() {
-		if builtinGames()[i].ID == body.GameID {
-			g := builtinGames()[i]
+	games := s.games()
+	for i := range games {
+		if games[i].ID == body.GameID {
+			g := games[i]
 			game = &g
 			break
 		}

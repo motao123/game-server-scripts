@@ -68,7 +68,7 @@ export default function DeploymentPage() {
 
   return (
     <>
-      <PageHeader title="游戏部署" desc="点击游戏卡片部署到默认路径，实时显示 SteamCMD 安装进度" actions={<Button onClick={load}>刷新</Button>} />
+      <PageHeader title="游戏部署" desc="点击游戏卡片部署到指定路径，实时显示部署进度" actions={<Button onClick={load}>刷新</Button>} />
       <Card className="section-card">
         <span>SteamCMD: </span>
         <Tag color={steamcmd ? 'green' : 'red'}>{steamcmd ? '已安装' : '未安装（请先在环境管理安装）'}</Tag>
@@ -83,14 +83,21 @@ export default function DeploymentPage() {
               onClick={() => openDeploy(game)}
               style={{ height: '100%' }}
             >
-              <p style={{ color: '#666', minHeight: 44 }}>{game.description}</p>
+              <p style={{ color: '#666', minHeight: 44 }}>{game.nameCN ? `${game.nameCN} - ` : ''}{game.description}</p>
               <div style={{ marginBottom: 8 }}>
                 {(game.tags || []).map((t: string) => <Tag color="geekblue" key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}
+                {(game.systems || []).map((t: string) => <Tag color="green" key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}
+                {game.memoryGB ? <Tag color="orange" style={{ marginBottom: 4 }}>{game.memoryGB}GB+</Tag> : null}
               </div>
               <div style={{ fontSize: 12, color: '#999' }}>
-                <div>端口: {(game.ports || []).join(', ')}</div>
+                <div>端口: {formatPorts(game)}</div>
                 <div>默认路径: {game.defaultPath}</div>
                 {game.appId ? <div>Steam AppID: {game.appId}</div> : null}
+                {game.storeUrl || game.docsUrl ? <div style={{ marginTop: 4 }}>
+                  {game.storeUrl ? <a href={game.storeUrl} target="_blank" onClick={e => e.stopPropagation()}>商店</a> : null}
+                  {game.storeUrl && game.docsUrl ? <span> · </span> : null}
+                  {game.docsUrl ? <a href={game.docsUrl} target="_blank" onClick={e => e.stopPropagation()}>文档</a> : null}
+                </div> : null}
               </div>
               <Button type="primary" block style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); openDeploy(game) }}>部署</Button>
             </Card>
@@ -116,8 +123,9 @@ export default function DeploymentPage() {
               <Input value={version} onChange={e => setVersion(e.target.value)} placeholder="Minecraft 版本，如 1.21.4" />
             </Space>}
             <p style={{ color: '#999', fontSize: 12 }}>
-              {target.appId ? `Steam AppID: ${target.appId}，` : ''}端口: {(target.ports || []).join(', ')}
+              {target.appId ? `Steam AppID: ${target.appId}，` : ''}端口: {formatPorts(target)}
             </p>
+            {target.tip && <p style={{ color: '#666', fontSize: 12, whiteSpace: 'pre-wrap' }}>{target.tip}</p>}
             {!steamcmd && target.appId ? (
               <p style={{ color: '#C10015', fontSize: 12 }}>
                 ⚠ SteamCMD 未安装，部署会失败。请先在「环境管理」页面安装 SteamCMD。
@@ -162,4 +170,10 @@ export default function DeploymentPage() {
       )}
     </>
   )
+}
+
+function formatPorts(game: any) {
+  if (game.portMappings?.length) return game.portMappings.map((p: any) => `${p.port}/${p.protocol || 'tcp/udp'}`).join(', ')
+  if (game.ports?.length) return game.ports.join(', ')
+  return '未提供'
 }
