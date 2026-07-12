@@ -32,6 +32,7 @@ foreach ($Platform in $Platforms) {
   go build -ldflags "-s -w" -o (Join-Path $OutDir "gsm-panel") ./cmd/gsm-panel
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   Copy-Item README.md (Join-Path $OutDir "README.md")
+  Copy-Item scripts/gsm-panel-install.sh (Join-Path $OutDir "gsm-panel-install.sh")
   Copy-Item -Recurse data (Join-Path $OutDir "data")
   $env:RELEASE_TAR_SOURCE = (Resolve-Path $OutDir).Path
   $env:RELEASE_TAR_OUTPUT = (Join-Path (Resolve-Path $DistDir).Path "$Name.tar.gz")
@@ -52,7 +53,7 @@ with tarfile.open(output, "w:gz") as tar:
             rel = os.path.relpath(path, source)
             arcname = os.path.join(root, rel).replace(os.sep, "/")
             info = tar.gettarinfo(path, arcname)
-            if not is_dir and name == "gsm-panel":
+            if not is_dir and name in {"gsm-panel", "gsm-panel-install.sh"}:
                 info.mode = 0o755
             if is_dir:
                 tar.addfile(info)

@@ -94,6 +94,40 @@ Get-Content dist\SHA256SUMS
 
 推送 `v*` 标签后，GitHub Actions 会自动构建 Linux amd64/arm64 发布包、生成 `SHA256SUMS`，并发布 GitHub Release；同时构建并推送 GHCR 多架构 Docker 镜像。
 
+## 从 Release 安装
+
+通用面板安装脚本会下载 GitHub Release 发布包、校验 `SHA256SUMS`、安装 `gsm-panel` 二进制、写入 systemd 服务，并保留已有配置文件。
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/motao123/game-server-scripts/master/scripts/gsm-panel-install.sh
+chmod +x gsm-panel-install.sh
+sudo WEB_PASSWORD='请改成强密码' ./gsm-panel-install.sh install
+```
+
+指定版本或本地发布包：
+
+```bash
+sudo VERSION=v0.1.0 ./gsm-panel-install.sh install
+sudo TARBALL=./dist/gsm-panel-v0.1.0-linux-amd64.tar.gz ./gsm-panel-install.sh install
+```
+
+升级和回滚：
+
+```bash
+sudo VERSION=v0.1.1 ./gsm-panel-install.sh upgrade
+sudo ./gsm-panel-install.sh rollback
+sudo ./gsm-panel-install.sh status
+sudo ./gsm-panel-install.sh logs
+```
+
+默认路径：
+
+- 二进制：`/usr/local/bin/gsm-panel`
+- 配置：`/etc/gsm-panel.env`
+- 数据：`/var/lib/gsm-panel`
+- 备份：`/var/backups/gsm-panel`
+- 服务：`gsm-panel.service`
+
 ## Docker 部署
 
 ```bash
@@ -263,6 +297,7 @@ game-server-scripts/
 │   └── package.json
 ├── palworld-server-install.sh     # Palworld 服务器安装脚本
 ├── palworld-web-install.sh        # Web 面板安装脚本
+├── scripts/gsm-panel-install.sh   # 通用面板安装/升级/回滚脚本
 ├── minecraft-server-install.sh    # Minecraft 安装脚本
 ├── valheim-server-install.sh      # Valheim 安装脚本
 └── terraria-server-install.sh     # Terraria 安装脚本

@@ -23,6 +23,8 @@ for platform in $PLATFORMS; do
   mkdir -p "$out_dir"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -ldflags "-s -w" -o "$out_dir/gsm-panel" ./cmd/gsm-panel
   cp README.md "$out_dir/README.md"
+  cp scripts/gsm-panel-install.sh "$out_dir/gsm-panel-install.sh"
+  chmod 755 "$out_dir/gsm-panel-install.sh"
   cp -r data "$out_dir/data"
   tar -C "$DIST_DIR" -czf "$DIST_DIR/$name.tar.gz" "$name"
   rm -rf "$out_dir"
