@@ -1,0 +1,34 @@
+[
+  {
+    "id": "generic-shell-server",
+    "name": "通用 Shell 服务模板",
+    "description": "生成一个可启动的通用实例目录，用于快速接入自定义服务端。",
+    "version": "1.0.0",
+    "author": "game-server-scripts",
+    "tags": ["通用", "模板"],
+    "defaultPath": "/home/steam/online/generic-shell-server",
+    "startCommand": "./start.sh",
+    "stopCommand": "ctrl+c",
+    "instanceType": "online-template",
+    "files": {
+      "README.md": "# 通用 Shell 服务模板\n\n这个目录由在线模板部署生成。\n",
+      "start.sh": "#!/usr/bin/env bash\necho 'online template server started'\nwhile true; do sleep 60; done\n"
+    }
+  },
+  {
+    "id": "minecraft-proxy-template",
+    "name": "Minecraft 代理模板",
+    "description": "生成代理类服务端目录和启动脚本，可替换为 Velocity、Waterfall 等真实包。",
+    "version": "1.0.0",
+    "author": "game-server-scripts",
+    "tags": ["Minecraft", "代理"],
+    "defaultPath": "/home/steam/online/minecraft-proxy-template",
+    "startCommand": "./start.sh",
+    "stopCommand": "stop",
+    "instanceType": "minecraft-proxy",
+    "files": {
+      "README.md": "# Minecraft 代理模板\n\n把代理服务端 jar 放到当前目录并调整 start.sh 即可运行。\n",
+      "start.sh": "#!/usr/bin/env bash\njava -Xms512M -Xmx1G -jar proxy.jar\n"
+    }
+  }
+]

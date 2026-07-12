@@ -1,4 +1,4 @@
-import { Button, Card, Col, Input, Modal, Progress, Row, Select, Space, Tag, message } from 'antd'
+import { Button, Card, Col, Input, Modal, Progress, Row, Select, Space, Tabs, Tag, message } from 'antd'
 import { useEffect, useRef, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
@@ -14,6 +14,7 @@ type DeployState = {
 
 export default function DeploymentPage() {
   const [games, setGames] = useState<any[]>([])
+  const [onlineTemplates, setOnlineTemplates] = useState<any[]>([])
   const [steamcmd, setSteamcmd] = useState<string>('')
   const [target, setTarget] = useState<any | null>(null)
   const [deploy, setDeploy] = useState<DeployState | null>(null)
@@ -24,8 +25,8 @@ export default function DeploymentPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function load() {
-    const [g, s] = await Promise.all([api<{ games: any[] }>('/api/games'), api<any>('/api/steamcmd/status')])
-    setGames(g.games || []); setSteamcmd(s.steamcmd || '')
+    const [g, s, o] = await Promise.all([api<{ games: any[] }>('/api/games'), api<any>('/api/steamcmd/status'), api<{ templates: any[] }>('/api/online-templates')])
+    setGames(g.games || []); setSteamcmd(s.steamcmd || ''); setOnlineTemplates(o.templates || [])
   }
   useEffect(() => { load(); return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
 
@@ -51,6 +52,19 @@ export default function DeploymentPage() {
     }
   }
 
+  async function startOnlineDeploy(template: any) {
+    setLoading(true)
+    try {
+      const d = await api<any>('/api/online-templates/deploy', { method: 'POST', body: { id: template.id, path: template.defaultPath } })
+      setDeploy({ taskId: d.taskId, gameName: template.name, status: 'running', output: '', error: '' })
+      poll(d.taskId)
+    } catch (e: any) {
+      message.error(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   function poll(taskId: string) {
     if (pollRef.current) clearInterval(pollRef.current)
     pollRef.current = setInterval(async () => {
@@ -68,42 +82,60 @@ export default function DeploymentPage() {
 
   return (
     <>
-      <PageHeader title="游戏部署" desc="点击游戏卡片部署到指定路径，实时显示部署进度" actions={<Button onClick={load}>刷新</Button>} />
+      <PageHeader title="游戏部署" desc="游戏模板和在线模板部署，实时显示部署进度" actions={<Button onClick={load}>刷新</Button>} />
       <Card className="section-card">
         <span>SteamCMD: </span>
         <Tag color={steamcmd ? 'green' : 'red'}>{steamcmd ? '已安装' : '未安装（请先在环境管理安装）'}</Tag>
         <span style={{ marginLeft: 16 }}>共 {games.length} 个游戏模板</span>
       </Card>
-      <Row gutter={[16, 16]}>
-        {games.map(game => (
-          <Col xs={24} sm={12} lg={8} key={game.id}>
-            <Card
-              title={<span>{game.name} <Tag color="blue">{game.id}</Tag></span>}
-              hoverable
-              onClick={() => openDeploy(game)}
-              style={{ height: '100%' }}
-            >
-              <p style={{ color: '#666', minHeight: 44 }}>{game.nameCN ? `${game.nameCN} - ` : ''}{game.description}</p>
-              <div style={{ marginBottom: 8 }}>
-                {(game.tags || []).map((t: string) => <Tag color="geekblue" key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}
-                {(game.systems || []).map((t: string) => <Tag color="green" key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}
-                {game.memoryGB ? <Tag color="orange" style={{ marginBottom: 4 }}>{game.memoryGB}GB+</Tag> : null}
-              </div>
-              <div style={{ fontSize: 12, color: '#999' }}>
-                <div>端口: {formatPorts(game)}</div>
-                <div>默认路径: {game.defaultPath}</div>
-                {game.appId ? <div>Steam AppID: {game.appId}</div> : null}
-                {game.storeUrl || game.docsUrl ? <div style={{ marginTop: 4 }}>
-                  {game.storeUrl ? <a href={game.storeUrl} target="_blank" onClick={e => e.stopPropagation()}>商店</a> : null}
-                  {game.storeUrl && game.docsUrl ? <span> · </span> : null}
-                  {game.docsUrl ? <a href={game.docsUrl} target="_blank" onClick={e => e.stopPropagation()}>文档</a> : null}
-                </div> : null}
-              </div>
-              <Button type="primary" block style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); openDeploy(game) }}>部署</Button>
-            </Card>
-          </Col>
-        ))}
-      </Row>
+      <Tabs items={[
+        { key: 'games', label: '游戏模板', children: <Row gutter={[16, 16]}>
+          {games.map(game => (
+            <Col xs={24} sm={12} lg={8} key={game.id}>
+              <Card
+                title={<span>{game.name} <Tag color="blue">{game.id}</Tag></span>}
+                hoverable
+                onClick={() => openDeploy(game)}
+                style={{ height: '100%' }}
+              >
+                <p style={{ color: '#666', minHeight: 44 }}>{game.nameCN ? `${game.nameCN} - ` : ''}{game.description}</p>
+                <div style={{ marginBottom: 8 }}>
+                  {(game.tags || []).map((t: string) => <Tag color="geekblue" key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}
+                  {(game.systems || []).map((t: string) => <Tag color="green" key={t} style={{ marginBottom: 4 }}>{t}</Tag>)}
+                  {game.memoryGB ? <Tag color="orange" style={{ marginBottom: 4 }}>{game.memoryGB}GB+</Tag> : null}
+                </div>
+                <div style={{ fontSize: 12, color: '#999' }}>
+                  <div>端口: {formatPorts(game)}</div>
+                  <div>默认路径: {game.defaultPath}</div>
+                  {game.appId ? <div>Steam AppID: {game.appId}</div> : null}
+                  {game.storeUrl || game.docsUrl ? <div style={{ marginTop: 4 }}>
+                    {game.storeUrl ? <a href={game.storeUrl} target="_blank" onClick={e => e.stopPropagation()}>商店</a> : null}
+                    {game.storeUrl && game.docsUrl ? <span> · </span> : null}
+                    {game.docsUrl ? <a href={game.docsUrl} target="_blank" onClick={e => e.stopPropagation()}>文档</a> : null}
+                  </div> : null}
+                </div>
+                <Button type="primary" block style={{ marginTop: 12 }} onClick={(e) => { e.stopPropagation(); openDeploy(game) }}>部署</Button>
+              </Card>
+            </Col>
+          ))}
+        </Row> },
+        { key: 'online', label: '在线模板', children: <Row gutter={[16, 16]}>
+          {onlineTemplates.map(template => (
+            <Col xs={24} sm={12} lg={8} key={template.id}>
+              <Card title={<span>{template.name} <Tag color="purple">{template.id}</Tag></span>} style={{ height: '100%' }}>
+                <p style={{ color: '#666', minHeight: 44 }}>{template.description}</p>
+                <div style={{ marginBottom: 8 }}>{(template.tags || []).map((t: string) => <Tag key={t}>{t}</Tag>)}</div>
+                <div style={{ fontSize: 12, color: '#999' }}>
+                  <div>默认路径: {template.defaultPath}</div>
+                  <div>版本: {template.version || '-'}</div>
+                  <div>作者: {template.author || '-'}</div>
+                </div>
+                <Button type="primary" block loading={loading} style={{ marginTop: 12 }} onClick={() => startOnlineDeploy(template)}>部署</Button>
+              </Card>
+            </Col>
+          ))}
+        </Row> },
+      ]} />
 
       <Modal
         title={target ? `部署 ${target.name}` : ''}

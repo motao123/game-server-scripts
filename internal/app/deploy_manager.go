@@ -97,8 +97,8 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 			task.fail(err)
 			return
 		}
-		task.succeed()
 		m.createInstance(task, game, path, instances)
+		task.succeed()
 		return
 	}
 
@@ -117,8 +117,8 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 
 	if game.AppID <= 0 {
 		task.appendOutput(fmt.Sprintf("游戏 %s 无 Steam AppID，跳过 SteamCMD 下载\n", game.Name))
-		task.succeed()
 		m.createInstance(task, game, path, instances)
+		task.succeed()
 		return
 	}
 
@@ -161,8 +161,8 @@ func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, in
 	}
 
 	task.appendOutput("部署完成\n")
-	task.succeed()
 	m.createInstance(task, game, path, instances)
+	task.succeed()
 }
 
 func (m *DeployManager) createInstance(task *DeployTask, game GameTemplate, path string, instances *InstanceStore) {
