@@ -13,7 +13,11 @@ import (
 )
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"instances": s.instances.List()})
+	instances := s.instances.List()
+	for i := range instances {
+		instances[i] = s.syncInstanceStatus(instances[i])
+	}
+	writeJSON(w, map[string]any{"instances": instances})
 }
 
 func (s *Server) safeRoot(path string) bool {

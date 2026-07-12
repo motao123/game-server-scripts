@@ -22,6 +22,7 @@ type Instance struct {
 	TerminalSession  string `json:"terminalSessionId,omitempty"`
 	LastStarted      string `json:"lastStarted,omitempty"`
 	LastStopped      string `json:"lastStopped,omitempty"`
+	LastError        string `json:"lastError,omitempty"`
 }
 
 type InstanceStore struct {

@@ -83,24 +83,36 @@ func (r *InstanceRuntime) Start(inst Instance) (InstanceStartResult, error) {
 		"status":          "running",
 		"pid":             c.Process.Pid,
 		"lastStarted":     time.Now().Format(time.RFC3339),
+		"lastError":       "",
 		"terminalSession": "",
 	})
 
 	go func() {
-		_ = c.Wait()
+		waitErr := c.Wait()
 		_ = f.Close()
 		r.mu.Lock()
 		delete(r.procs, inst.ID)
 		delete(r.stdins, inst.ID)
 		r.mu.Unlock()
 		cur, ok := r.store.Get(inst.ID)
-		if ok && cur.Status != "stopped" {
-			r.store.SetFields(inst.ID, map[string]any{
-				"status":      "stopped",
-				"pid":         0,
-				"lastStopped": time.Now().Format(time.RFC3339),
-			})
+		if !ok || cur.Status == "stopped" {
+			return
 		}
+		fields := map[string]any{
+			"pid":         0,
+			"lastStopped": time.Now().Format(time.RFC3339),
+		}
+		if cur.Status == "stopping" {
+			fields["status"] = "stopped"
+		} else {
+			fields["status"] = "error"
+			if waitErr != nil {
+				fields["lastError"] = "进程异常退出: " + waitErr.Error()
+			} else {
+				fields["lastError"] = "进程启动后退出，请查看实例日志"
+			}
+		}
+		r.store.SetFields(inst.ID, fields)
 	}()
 
 	return InstanceStartResult{PID: c.Process.Pid, LogFile: logFile}, nil

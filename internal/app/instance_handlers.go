@@ -120,6 +120,34 @@ func (s *Server) handleInstanceInput(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
 }
 
+func (s *Server) syncInstanceStatus(inst Instance) Instance {
+	if svc, ok := instanceSystemdService(inst); ok {
+		status := "stopped"
+		if systemdActive(svc) {
+			status = "running"
+		}
+		if inst.Status != status {
+			s.instances.SetStatus(inst.ID, status)
+		}
+		inst.Status = status
+		return inst
+	}
+	if inst.Status == "running" && inst.PID > 0 && !processAlive(inst.PID) {
+		now := time.Now().Format(time.RFC3339)
+		s.instances.SetFields(inst.ID, map[string]any{
+			"status":      "error",
+			"pid":         0,
+			"lastStopped": now,
+			"lastError":   "运行进程已退出，请查看实例日志",
+		})
+		inst.Status = "error"
+		inst.PID = 0
+		inst.LastStopped = now
+		inst.LastError = "运行进程已退出，请查看实例日志"
+	}
+	return inst
+}
+
 func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
 	inst, ok := s.instances.Get(id)
@@ -127,15 +155,8 @@ func (s *Server) handleInstanceStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "实例不存在")
 		return
 	}
-	if svc, ok := instanceSystemdService(inst); ok {
-		status := "stopped"
-		if systemdActive(svc) {
-			status = "running"
-		}
-		s.instances.SetStatus(inst.ID, status)
-		inst.Status = status
-	}
-	writeJSON(w, map[string]any{"status": inst.Status, "pid": inst.PID, "lastStarted": inst.LastStarted, "lastStopped": inst.LastStopped})
+	inst = s.syncInstanceStatus(inst)
+	writeJSON(w, map[string]any{"status": inst.Status, "pid": inst.PID, "lastStarted": inst.LastStarted, "lastStopped": inst.LastStopped, "lastError": inst.LastError})
 }
 
 func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
@@ -211,6 +232,9 @@ func (s *InstanceStore) SetFields(id string, fields map[string]any) {
 		}
 		if v, ok := fields["lastStopped"]; ok {
 			s.list[i].LastStopped = fmt.Sprint(v)
+		}
+		if v, ok := fields["lastError"]; ok {
+			s.list[i].LastError = fmt.Sprint(v)
 		}
 		break
 	}
