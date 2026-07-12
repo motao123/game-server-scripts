@@ -71,6 +71,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/auth/verify", s.require(s.handleVerify))
 	mux.HandleFunc("/api/auth/logout", s.require(s.handleLogout))
@@ -137,6 +138,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/environment/install", s.requirePost(s.handleEnvironmentInstall))
 	mux.HandleFunc("/api/environment/install/status", s.require(s.handleEnvironmentInstallStatus))
 	mux.HandleFunc("/api/plugins", s.require(s.handlePlugins))
+	mux.HandleFunc("/api/plugins/create", s.requirePost(s.handlePluginCreate))
+	mux.HandleFunc("/api/plugins/delete", s.requirePost(s.handlePluginDelete))
 	mux.HandleFunc("/api/plugins/toggle", s.requirePost(s.handlePluginToggle))
 	mux.HandleFunc("/api/settings", s.require(s.handleSettings))
 	mux.HandleFunc("/api/settings/password", s.requirePost(s.handleChangePassword))
