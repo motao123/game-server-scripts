@@ -1,4 +1,4 @@
-import { Button, Card, Form, Input, Table, message } from 'antd'
+import { Button, Card, Form, Input, Table, message, Modal } from 'antd'
 import { useEffect, useState } from 'react'
 import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
@@ -7,7 +7,12 @@ export default function TasksPage() {
   const [tasks, setTasks] = useState<any[]>([])
   async function load() { const d = await api<{ tasks: any[] }>('/api/scheduled-tasks'); setTasks(d.tasks || []) }
   async function create(values: any) { await api('/api/scheduled-tasks/create', { method: 'POST', body: values }); message.success('已创建'); load() }
-  async function remove(id: string) { await api('/api/scheduled-tasks/delete', { method: 'POST', body: { id } }); message.success('已删除'); load() }
+  async function remove(id: string) {
+    Modal.confirm({
+      title: '确认删除任务', content: '', okText: '删除', okType: 'danger', cancelText: '取消',
+      onOk: async () => { await api('/api/scheduled-tasks/delete', { method: 'POST', body: { id } }); message.success('已删除'); load() },
+    })
+  }
   useEffect(() => { load() }, [])
   return <>
     <PageHeader title="计划任务" desc="支持 cron 调度备份、实例动作和 shell 命令" actions={<Button onClick={load}>刷新</Button>} />

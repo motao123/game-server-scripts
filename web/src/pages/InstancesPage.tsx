@@ -33,6 +33,12 @@ export default function InstancesPage() {
 }
 
 function GenericInstances({ instances, post }: { instances: any[]; post: (p: string, b: any, ok: string) => void }) {
+  function delInstance(r: any) {
+    Modal.confirm({
+      title: '确认删除实例', content: `${r.name} (${r.id})`, okText: '删除', okType: 'danger', cancelText: '取消',
+      onOk: () => post('/api/instances/delete', { id: r.id }, '已删除'),
+    })
+  }
   return <Card title="通用实例" extra={<span>支持自定义工作目录、启动命令、停止命令</span>}>
     <Form layout="inline" onFinish={(v) => post('/api/instances/create', { ...v, instanceType: 'generic' }, '已创建实例')}>
       <Form.Item name="name" rules={[{ required: true }]}><Input placeholder="实例名称" /></Form.Item>
@@ -42,8 +48,8 @@ function GenericInstances({ instances, post }: { instances: any[]; post: (p: str
       <Button htmlType="submit" type="primary">创建</Button>
     </Form>
     <Table rowKey="id" dataSource={instances} pagination={false} className="section-card" columns={[
-      { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status' }, { title: '工作目录', dataIndex: 'workingDirectory' },
-      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')}>启动</Button><Button onClick={() => post('/api/instances/stop', { id: r.id }, '已停止')}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')}>重启</Button><Button danger onClick={() => post('/api/instances/delete', { id: r.id }, '已删除')}>删除</Button></Space> }
+      { title: '名称', dataIndex: 'name' }, { title: '类型', dataIndex: 'instanceType' }, { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={s === 'running' ? 'green' : s === 'error' ? 'red' : 'default'}>{s}</Tag> }, { title: '工作目录', dataIndex: 'workingDirectory' },
+      { title: '操作', render: (_, r: any) => <Space><Button onClick={() => post('/api/instances/start', { id: r.id }, '已启动')} disabled={r.status === 'running'}>启动</Button><Button onClick={() => post('/api/instances/stop', { id: r.id }, '已停止')} disabled={r.status !== 'running'}>停止</Button><Button onClick={() => post('/api/instances/restart', { id: r.id }, '已重启')} disabled={r.status !== 'running'}>重启</Button><Button danger onClick={() => delInstance(r)}>删除</Button></Space> }
     ]} />
   </Card>
 }
