@@ -16,16 +16,25 @@ export default function BackupPage() {
   async function create() {
     try {
       const v = await form.validateFields()
+      const check = await api<any>('/api/backup/create-preflight', { method: 'POST', body: v })
+      if (!check.ready) { message.error((check.problems || ['备份预检未通过']).join('；')); return }
       await api('/api/backup/create-generic', { method: 'POST', body: v })
       message.success('备份已创建'); setModalOpen(false); form.resetFields(); load()
     } catch (e: any) { if (e.errorFields?.length) return; message.error(e.message) }
   }
 
   async function restore(backupName: string, fileName: string) {
-    Modal.confirm({
-      title: '确认恢复备份', content: `${backupName}/${fileName}`, okText: '恢复', okType: 'danger', cancelText: '取消',
-      onOk: async () => { try { await api('/api/backup/restore-generic', { method: 'POST', body: { backupName, fileName } }); message.success('已恢复') } catch (e: any) { message.error(e.message) } },
-    })
+    try {
+      const check = await api<any>('/api/backup/restore-preflight', { method: 'POST', body: { backupName, fileName } })
+      if (!check.ready) { message.error((check.problems || ['归档预检未通过']).join('；')); return }
+      const warning = (check.warnings || []).join('；')
+      Modal.confirm({
+        title: '确认恢复备份',
+        content: <div><div>{backupName}/{fileName}</div><div>恢复目标：{check.sourcePath}</div><div>归档条目：{check.archiveEntries}</div>{warning && <div style={{ color: '#C10015', marginTop: 8 }}>{warning}</div>}</div>,
+        okText: warning ? '确认覆盖恢复' : '恢复', okType: 'danger', cancelText: '取消',
+        onOk: async () => { try { await api('/api/backup/restore-generic', { method: 'POST', body: { backupName, fileName, overwrite: !!warning } }); message.success('已恢复'); load() } catch (e: any) { message.error(e.message) } },
+      })
+    } catch (e: any) { message.error(e.message) }
   }
 
   async function del(backupName: string, fileName: string) {

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -31,6 +32,15 @@ type BackupGroup struct {
 
 type BackupMeta struct {
 	SourcePath string `json:"sourcePath"`
+}
+
+type BackupPreflight struct {
+	Ready          bool     `json:"ready"`
+	SourcePath     string   `json:"sourcePath,omitempty"`
+	TargetPath     string   `json:"targetPath,omitempty"`
+	ArchiveEntries int      `json:"archiveEntries,omitempty"`
+	Problems       []string `json:"problems"`
+	Warnings       []string `json:"warnings"`
 }
 
 type BackupManager struct {
@@ -74,12 +84,25 @@ func (m *BackupManager) Groups() []BackupGroup {
 	return groups
 }
 
-func (m *BackupManager) Create(name, sourcePath string, maxKeep int) (string, error) {
+func (m *BackupManager) CreatePreflight(name, sourcePath string) BackupPreflight {
+	result := BackupPreflight{Ready: true, SourcePath: sourcePath}
 	if !validBackupPathPart(name) {
-		return "", errBackupName()
+		result.Problems = append(result.Problems, errBackupName().Error())
 	}
 	if !m.allowed(sourcePath) {
-		return "", errBackupSource()
+		result.Problems = append(result.Problems, errBackupSource().Error())
+	} else if info, err := os.Stat(sourcePath); err != nil {
+		result.Problems = append(result.Problems, "备份源路径不存在: "+sourcePath)
+	} else if !info.IsDir() {
+		result.Problems = append(result.Problems, "备份源路径不是目录: "+sourcePath)
+	}
+	result.Ready = len(result.Problems) == 0
+	return result
+}
+
+func (m *BackupManager) Create(name, sourcePath string, maxKeep int) (string, error) {
+	if check := m.CreatePreflight(name, sourcePath); !check.Ready {
+		return "", &backupError{strings.Join(check.Problems, "；")}
 	}
 	groupDir := filepath.Join(m.root, name)
 	if err := os.MkdirAll(groupDir, 0755); err != nil {
@@ -110,26 +133,90 @@ func (m *BackupManager) ArchivePath(name, fileName string) (string, error) {
 	return path, nil
 }
 
-func (m *BackupManager) Restore(name, fileName string) (string, error) {
+func (m *BackupManager) RestorePreflight(name, fileName string) BackupPreflight {
+	result := BackupPreflight{Ready: true}
 	groupDir := filepath.Join(m.root, name)
 	if !validBackupPathPart(name) || !insideRoot(m.root, groupDir) {
-		return "", errBackupName()
+		result.Problems = append(result.Problems, errBackupName().Error())
+		result.Ready = false
+		return result
 	}
 	meta, err := readBackupMeta(groupDir)
 	if err != nil || meta.SourcePath == "" {
-		return "", errBackupTarget()
+		result.Problems = append(result.Problems, errBackupTarget().Error())
+		result.Ready = false
+		return result
 	}
+	result.SourcePath = meta.SourcePath
+	result.TargetPath = filepath.Dir(meta.SourcePath)
 	if !m.allowed(meta.SourcePath) {
-		return "", errBackupSource()
+		result.Problems = append(result.Problems, errBackupSource().Error())
 	}
 	archive, err := m.ArchivePath(name, fileName)
 	if err != nil {
+		result.Problems = append(result.Problems, err.Error())
+	} else if entries, err := validateTarGz(archive); err != nil {
+		result.Problems = append(result.Problems, "归档校验失败: "+err.Error())
+	} else {
+		result.ArchiveEntries = entries
+	}
+	if _, err := os.Stat(meta.SourcePath); err == nil {
+		result.Warnings = append(result.Warnings, "恢复会覆盖现有目录中的同名文件")
+	}
+	result.Ready = len(result.Problems) == 0
+	return result
+}
+
+func (m *BackupManager) Restore(name, fileName string) (string, error) {
+	return m.RestoreWithOptions(name, fileName, false)
+}
+
+func (m *BackupManager) RestoreWithOptions(name, fileName string, overwrite bool) (string, error) {
+	check := m.RestorePreflight(name, fileName)
+	if !check.Ready {
+		return "", &backupError{strings.Join(check.Problems, "；")}
+	}
+	if len(check.Warnings) > 0 && !overwrite {
+		return "", &backupError{"恢复目标已存在，需要确认覆盖"}
+	}
+	archive, _ := m.ArchivePath(name, fileName)
+	if err := extractTarGz(archive, check.TargetPath); err != nil {
 		return "", err
 	}
-	if err := extractTarGz(archive, filepath.Dir(meta.SourcePath)); err != nil {
-		return "", err
+	return check.SourcePath, nil
+}
+
+func validateTarGz(path string) (int, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0, err
 	}
-	return meta.SourcePath, nil
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return 0, err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	count := 0
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+		clean := filepath.Clean(header.Name)
+		if filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+			return 0, fmt.Errorf("归档包含不安全路径: %s", header.Name)
+		}
+		count++
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("归档不包含文件")
+	}
+	return count, nil
 }
 
 func (m *BackupManager) Delete(name, fileName string) error {
@@ -142,6 +229,15 @@ func (m *BackupManager) Delete(name, fileName string) error {
 
 func (s *Server) handleBackupGroups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"groups": s.backups.Groups()})
+}
+
+func (s *Server) handleBackupCreatePreflight(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BackupName string `json:"backupName"`
+		SourcePath string `json:"sourcePath"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	writeJSON(w, s.backups.CreatePreflight(body.BackupName, body.SourcePath))
 }
 
 func (s *Server) handleBackupCreateGeneric(w http.ResponseWriter, r *http.Request) {
@@ -163,13 +259,23 @@ func (s *Server) handleBackupCreateGeneric(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, map[string]any{"ok": true, "archive": archive})
 }
 
-func (s *Server) handleBackupRestoreGeneric(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleBackupRestorePreflight(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		BackupName string `json:"backupName"`
 		FileName   string `json:"fileName"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	target, err := s.backups.Restore(body.BackupName, body.FileName)
+	writeJSON(w, s.backups.RestorePreflight(body.BackupName, body.FileName))
+}
+
+func (s *Server) handleBackupRestoreGeneric(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		BackupName string `json:"backupName"`
+		FileName   string `json:"fileName"`
+		Overwrite  bool   `json:"overwrite"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	target, err := s.backups.RestoreWithOptions(body.BackupName, body.FileName, body.Overwrite)
 	if err != nil {
 		writeError(w, 500, err.Error())
 		return
