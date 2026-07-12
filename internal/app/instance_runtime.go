@@ -24,6 +24,13 @@ type InstanceStartResult struct {
 	LogFile string `json:"logFile"`
 }
 
+type InstanceReadiness struct {
+	Ready    bool     `json:"ready"`
+	Command  string   `json:"command"`
+	Problems []string `json:"problems"`
+	Warnings []string `json:"warnings"`
+}
+
 func NewInstanceRuntime(store *InstanceStore) *InstanceRuntime {
 	return &InstanceRuntime{store: store, procs: map[string]*exec.Cmd{}, stdins: map[string]func(string) error{}}
 }
@@ -32,28 +39,13 @@ func (r *InstanceRuntime) Start(inst Instance) (InstanceStartResult, error) {
 	if inst.Status == "running" || inst.Status == "starting" {
 		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusConflict, message: "实例已在运行"}
 	}
-	if inst.WorkingDirectory != "" {
-		if _, err := os.Stat(inst.WorkingDirectory); err != nil {
-			return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: "工作目录不存在: " + inst.WorkingDirectory}
-		}
+	check := r.CheckReadiness(inst)
+	if !check.Ready {
+		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: strings.Join(check.Problems, "；")}
 	}
-	cmd := inst.StartCommand
-	if inst.InstanceType == "minecraft-java" && cmd == "" {
-		if script := detectStartScript(inst.WorkingDirectory); script != "" {
-			cmd = "./" + script
-		} else if jar := detectJarFile(inst.WorkingDirectory); jar != "" {
-			cmd = "java -jar " + jar + " nogui"
-		}
-	}
-	if strings.TrimSpace(cmd) == "" {
-		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: "启动命令为空"}
-	}
+	cmd := check.Command
 	if svc, ok := systemctlStartService(cmd); ok {
 		return r.startSystemd(inst, svc)
-	}
-	if err := validateStartCommandFile(inst.WorkingDirectory, cmd); err != nil {
-		r.store.SetStatus(inst.ID, "error")
-		return InstanceStartResult{}, &instanceRuntimeError{code: httpStatusBadRequest, message: err.Error()}
 	}
 	r.store.SetStatus(inst.ID, "starting")
 
@@ -112,6 +104,47 @@ func (r *InstanceRuntime) Start(inst Instance) (InstanceStartResult, error) {
 	}()
 
 	return InstanceStartResult{PID: c.Process.Pid, LogFile: logFile}, nil
+}
+
+func (r *InstanceRuntime) CheckReadiness(inst Instance) InstanceReadiness {
+	check := InstanceReadiness{Ready: true}
+	if strings.TrimSpace(inst.Name) == "" {
+		check.Problems = append(check.Problems, "实例名称不能为空")
+	}
+	if strings.TrimSpace(inst.WorkingDirectory) == "" {
+		check.Problems = append(check.Problems, "工作目录不能为空")
+	} else if st, err := os.Stat(inst.WorkingDirectory); err != nil {
+		check.Problems = append(check.Problems, "工作目录不存在: "+inst.WorkingDirectory)
+	} else if !st.IsDir() {
+		check.Problems = append(check.Problems, "工作目录不是目录: "+inst.WorkingDirectory)
+	}
+	cmd := effectiveStartCommand(inst)
+	check.Command = cmd
+	if strings.TrimSpace(cmd) == "" {
+		check.Problems = append(check.Problems, "启动命令为空")
+	} else if _, ok := systemctlStartService(cmd); !ok {
+		if err := validateStartCommandFile(inst.WorkingDirectory, cmd); err != nil {
+			check.Problems = append(check.Problems, err.Error())
+		}
+	}
+	if inst.InstanceType == "generic" && strings.TrimSpace(inst.StopCommand) == "" {
+		check.Warnings = append(check.Warnings, "未设置停止命令，停止时将使用 Ctrl+C")
+	}
+	check.Ready = len(check.Problems) == 0
+	return check
+}
+
+func effectiveStartCommand(inst Instance) string {
+	cmd := inst.StartCommand
+	if inst.InstanceType == "minecraft-java" && strings.TrimSpace(cmd) == "" {
+		if script := detectStartScript(inst.WorkingDirectory); script != "" {
+			return "./" + script
+		}
+		if jar := detectJarFile(inst.WorkingDirectory); jar != "" {
+			return "java -jar " + jar + " nogui"
+		}
+	}
+	return cmd
 }
 
 func (r *InstanceRuntime) Stop(inst Instance) string {

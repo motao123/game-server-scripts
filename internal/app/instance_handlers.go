@@ -11,6 +11,11 @@ import (
 func (s *Server) handleInstanceCreate(w http.ResponseWriter, r *http.Request) {
 	var body Instance
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	normalizeInstanceDefaults(&body)
+	if err := validateInstanceForSave(body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if body.InstanceType == "minecraft-bedrock" {
 		if body.StartCommand == "" {
 			body.StartCommand = "./bedrock_server"
@@ -21,14 +26,48 @@ func (s *Server) handleInstanceCreate(w http.ResponseWriter, r *http.Request) {
 		body.StopCommand = "stop"
 	}
 	inst, err := s.instances.Create(body)
-	writeJSON(w, map[string]any{"ok": err == nil, "instance": inst, "error": errString(err)})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "instance": inst})
 }
 
 func (s *Server) handleInstanceUpdate(w http.ResponseWriter, r *http.Request) {
 	var body Instance
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	current, ok := s.instances.Get(body.ID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "实例不存在")
+		return
+	}
+	normalizeInstanceDefaults(&body)
+	if current.Status == "running" || current.Status == "starting" || current.Status == "stopping" {
+		if body.WorkingDirectory != current.WorkingDirectory || body.StartCommand != current.StartCommand || body.InstanceType != current.InstanceType {
+			writeError(w, http.StatusConflict, "实例运行中，只允许修改名称、描述、停止命令和自启动")
+			return
+		}
+	}
+	if err := validateInstanceForSave(body); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	inst, err := s.instances.Update(body.ID, body)
-	writeJSON(w, map[string]any{"ok": err == nil, "instance": inst, "error": errString(err)})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "instance": inst})
+}
+
+func (s *Server) handleInstanceReadiness(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	inst, ok := s.instances.Get(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "实例不存在")
+		return
+	}
+	writeJSON(w, s.runtime.CheckReadiness(inst))
 }
 
 func (s *Server) handleInstanceDelete(w http.ResponseWriter, r *http.Request) {

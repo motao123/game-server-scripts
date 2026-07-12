@@ -137,6 +137,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/instances/input", s.requirePost(s.handleInstanceInput))
 	mux.HandleFunc("/api/instances/status", s.require(s.handleInstanceStatus))
 	mux.HandleFunc("/api/instances/logs", s.require(s.handleInstanceLogs))
+	mux.HandleFunc("/api/instances/readiness", s.require(s.handleInstanceReadiness))
 	mux.HandleFunc("/api/game-config/templates", s.require(s.handleGameConfigTemplates))
 	mux.HandleFunc("/api/game-config/read", s.require(s.handleGameConfigRead))
 	mux.HandleFunc("/api/game-config/save", s.requirePost(s.handleGameConfigSave))
