@@ -1,4 +1,4 @@
-import { Button, Card, Dropdown, Input, Modal, Space, Table, Tag, message } from 'antd'
+import { Button, Card, Dropdown, Input, Modal, Progress, Space, Table, Tag, message } from 'antd'
 import { DownloadOutlined, FileAddOutlined, FolderAddOutlined, ReloadOutlined, UploadOutlined } from '@ant-design/icons'
 import { useEffect, useRef, useState } from 'react'
 import MonacoEditor from '@monaco-editor/react'
@@ -6,6 +6,7 @@ import { PageHeader } from '../components/PageHeader'
 import { api } from '../api'
 
 type FileItem = { name: string; path: string; isDir: boolean; size: number; modTime: string }
+type FileTask = { id: string; type: string; name: string; status: string; progress: number; message?: string; error?: string; updatedAt: string }
 
 export default function FilesPage() {
   const [path, setPath] = useState('')
@@ -18,6 +19,8 @@ export default function FilesPage() {
   const [editContent, setEditContent] = useState('')
   const [permModal, setPermModal] = useState<{ open: boolean; path: string; mode: string }>({ open: false, path: '', mode: '' })
   const [favorites, setFavorites] = useState<string[]>([])
+  const [tasks, setTasks] = useState<FileTask[]>([])
+  const [uploading, setUploading] = useState<{ name: string; progress: number } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   async function load(p?: string) {
@@ -28,8 +31,13 @@ export default function FilesPage() {
       setItems(d.items || [])
     } catch (e: any) { message.error(e.message) } finally { setLoading(false) }
   }
-  useEffect(() => { load(); loadFavorites() }, [])
+  useEffect(() => { load(); loadFavorites(); loadTasks() }, [])
+  useEffect(() => {
+    const timer = setInterval(loadTasks, 2000)
+    return () => clearInterval(timer)
+  }, [])
   async function loadFavorites() { try { const d = await api<{ favorites: string[] }>('/api/files/favorites'); setFavorites(d.favorites || []) } catch {} }
+  async function loadTasks() { try { const d = await api<{ tasks: FileTask[] }>('/api/files/tasks'); setTasks(d.tasks || []) } catch {} }
   async function toggleFav(p: string) {
     if (favorites.includes(p)) await api('/api/files/favorites?path=' + encodeURIComponent(p), { method: 'DELETE' })
     else await api('/api/files/favorites', { method: 'POST', body: { path: p } })
@@ -42,8 +50,9 @@ export default function FilesPage() {
     try {
       if (clipboard.op === 'copy') await api('/api/files/copy', { method: 'POST', body: { src: clipboard.path, dst } })
       else await api('/api/files/move', { method: 'POST', body: { src: clipboard.path, dst } })
-      message.success(clipboard.op === 'copy' ? '已复制' : '已移动')
+      message.success(clipboard.op === 'copy' ? '已加入复制任务' : '已加入移动任务')
       setClipboard(null); load()
+      loadTasks()
     } catch (e: any) { message.error(e.message) }
   }
   async function showPermissions(item: FileItem) {
@@ -111,12 +120,12 @@ export default function FilesPage() {
   }
 
   async function compress(item: FileItem) {
-    try { await api('/api/files/compress', { method: 'POST', body: { path: item.path } }); message.success('已压缩'); load() }
+    try { await api('/api/files/compress', { method: 'POST', body: { path: item.path } }); message.success('已加入压缩任务'); loadTasks() }
     catch (e: any) { message.error(e.message) }
   }
 
   async function extract(item: FileItem) {
-    try { await api('/api/files/extract', { method: 'POST', body: { archive: item.path } }); message.success('已解压'); load() }
+    try { await api('/api/files/extract', { method: 'POST', body: { archive: item.path } }); message.success('已加入解压任务'); loadTasks() }
     catch (e: any) { message.error(e.message) }
   }
 
@@ -143,16 +152,29 @@ export default function FilesPage() {
   }
 
   async function upload(file: File) {
-    const formData = new FormData()
-    formData.append('file', file)
+    const chunkSize = 8 * 1024 * 1024
+    const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize))
+    const uploadId = `${Date.now()}-${Math.random().toString(16).slice(2)}-${file.name.replace(/[^\w.-]/g, '_')}`
     try {
       const csrf = localStorage.getItem('csrf')
-      const resp = await fetch(`/api/files/upload?path=${encodeURIComponent(path)}`, {
-        method: 'POST', body: formData, credentials: 'same-origin', headers: csrf ? { 'X-CSRF-Token': csrf } : {},
-      })
-      const d = await resp.json()
-      if (d.ok) { message.success(`已上传 ${d.name}`); load() } else { message.error(d.error || '上传失败') }
-    } catch (e: any) { message.error(e.message) }
+      setUploading({ name: file.name, progress: 0 })
+      for (let i = 0; i < totalChunks; i++) {
+        const formData = new FormData()
+        formData.append('uploadId', uploadId)
+        formData.append('chunkIndex', String(i))
+        formData.append('chunk', file.slice(i * chunkSize, Math.min(file.size, (i + 1) * chunkSize)))
+        const resp = await fetch(`/api/files/upload-chunk?path=${encodeURIComponent(path)}`, {
+          method: 'POST', body: formData, credentials: 'same-origin', headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+        })
+        const d = await resp.json()
+        if (!d.ok) throw new Error(d.error || '分片上传失败')
+        setUploading({ name: file.name, progress: Math.round(((i + 1) / totalChunks) * 90) })
+      }
+      await api('/api/files/upload-complete', { method: 'POST', body: { path, uploadId, fileName: file.name, totalChunks } })
+      message.success(`已加入合并任务 ${file.name}`)
+      setUploading(null)
+      loadTasks()
+    } catch (e: any) { setUploading(null); message.error(e.message) }
   }
 
   function contextMenu(item: FileItem) {
@@ -217,6 +239,20 @@ export default function FilesPage() {
         </Space>
         <Input.Search placeholder="搜索当前目录" value={search} onChange={e => setSearch(e.target.value)} style={{ marginTop: 8 }} allowClear />
       </Card>
+      {(uploading || tasks.length > 0) && <Card title="后台文件任务" extra={<Button size="small" onClick={loadTasks}>刷新</Button>}>
+        {uploading && <div style={{ marginBottom: 12 }}>
+          <Space style={{ width: '100%', justifyContent: 'space-between' }}><span>{uploading.name}</span><Tag color="blue">上传分片</Tag></Space>
+          <Progress percent={uploading.progress} size="small" />
+        </div>}
+        {tasks.slice(0, 8).map(t => <div key={t.id} style={{ marginBottom: 12 }}>
+          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+            <span>{taskLabel(t.type)}：{t.name}</span>
+            <Tag color={t.status === 'done' ? 'green' : t.status === 'error' ? 'red' : t.status === 'running' ? 'blue' : 'default'}>{statusLabel(t.status)}</Tag>
+          </Space>
+          <Progress percent={t.progress || 0} size="small" status={t.status === 'error' ? 'exception' : t.status === 'done' ? 'success' : 'active'} />
+          {(t.error || t.message) && <div style={{ color: t.error ? '#cf1322' : '#666' }}>{t.error || t.message}</div>}
+        </div>)}
+      </Card>}
       <Card>
         <Table
           rowKey="path"
@@ -283,4 +319,14 @@ function getLanguage(path: string): string {
     cfg: 'ini', conf: 'ini', properties: 'ini', txt: 'plaintext',
   }
   return map[ext || ''] || 'plaintext'
+}
+
+function taskLabel(type: string): string {
+  const map: Record<string, string> = { upload: '上传', copy: '复制', move: '移动', compress: '压缩', extract: '解压' }
+  return map[type] || type
+}
+
+function statusLabel(status: string): string {
+  const map: Record<string, string> = { queued: '排队中', running: '执行中', done: '完成', error: '失败' }
+  return map[status] || status
 }

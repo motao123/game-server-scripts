@@ -32,8 +32,11 @@ func (s *Server) handleFilesExtract(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "路径不允许访问")
 		return
 	}
-	err := extractTarGz(body.Archive, body.Dest)
-	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+	task := s.fileTasks.Add("extract", filepath.Base(body.Archive), func(update func(int, string)) error {
+		update(10, "解压中")
+		return extractTarGz(body.Archive, body.Dest)
+	})
+	writeJSON(w, map[string]any{"ok": true, "task": task})
 }
 
 func extractTarGz(src, dest string) error {

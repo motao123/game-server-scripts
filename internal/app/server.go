@@ -30,6 +30,7 @@ type Server struct {
 	scheduler *Scheduler
 	installs  *InstallManager
 	deploys   *DeployManager
+	fileTasks *FileTaskManager
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -44,6 +45,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.scheduler = NewScheduler(s)
 	s.installs = NewInstallManager()
 	s.deploys = NewDeployManager()
+	s.fileTasks = NewFileTaskManager()
 	return s, nil
 }
 
@@ -132,6 +134,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/files/write", s.requirePost(s.handleFilesWrite))
 	mux.HandleFunc("/api/files/download", s.require(s.handleFilesDownload))
 	mux.HandleFunc("/api/files/upload", s.require(s.handleFilesUpload))
+	mux.HandleFunc("/api/files/upload-chunk", s.requirePost(s.handleFilesUploadChunk))
+	mux.HandleFunc("/api/files/upload-complete", s.requirePost(s.handleFilesUploadComplete))
+	mux.HandleFunc("/api/files/tasks", s.require(s.handleFileTasks))
 	mux.HandleFunc("/api/files/delete", s.requirePost(s.handleFilesDelete))
 	mux.HandleFunc("/api/files/mkdir", s.requirePost(s.handleFilesMkdir))
 	mux.HandleFunc("/api/files/compress", s.requirePost(s.handleFilesCompress))

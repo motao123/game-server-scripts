@@ -159,8 +159,11 @@ func (s *Server) handleFilesCompress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	archive := strings.TrimRight(body.Path, string(os.PathSeparator)) + ".tar.gz"
-	err := createTarGz(body.Path, archive)
-	writeJSON(w, map[string]any{"ok": err == nil, "archive": archive, "error": errString(err)})
+	task := s.fileTasks.Add("compress", filepath.Base(body.Path), func(update func(int, string)) error {
+		update(10, "压缩中")
+		return createTarGz(body.Path, archive)
+	})
+	writeJSON(w, map[string]any{"ok": true, "archive": archive, "task": task})
 }
 
 func createTarGz(src, dst string) error {

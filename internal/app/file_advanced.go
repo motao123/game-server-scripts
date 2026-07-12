@@ -22,8 +22,11 @@ func (s *Server) handleFilesCopy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "路径不允许访问")
 		return
 	}
-	err := copyPath(body.Src, body.Dst)
-	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+	task := s.fileTasks.Add("copy", filepath.Base(body.Src), func(update func(int, string)) error {
+		update(10, "复制中")
+		return copyPath(body.Src, body.Dst)
+	})
+	writeJSON(w, map[string]any{"ok": true, "task": task})
 }
 
 func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
@@ -33,8 +36,11 @@ func (s *Server) handleFilesMove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "路径不允许访问")
 		return
 	}
-	err := os.Rename(body.Src, body.Dst)
-	writeJSON(w, map[string]any{"ok": err == nil, "error": errString(err)})
+	task := s.fileTasks.Add("move", filepath.Base(body.Src), func(update func(int, string)) error {
+		update(20, "移动中")
+		return os.Rename(body.Src, body.Dst)
+	})
+	writeJSON(w, map[string]any{"ok": true, "task": task})
 }
 
 func (s *Server) handleFilesPermissions(w http.ResponseWriter, r *http.Request) {
