@@ -56,6 +56,7 @@ export default function EnvironmentPage() {
     ...javaPackages,
     { key: 'steamcmd', label: 'SteamCMD', desc: 'Palworld/Valheim/Terraria 等 Steam 游戏需要', cmd: 'steamcmd', installed: !!env.steamcmd },
     { key: 'tools', label: '常用工具', desc: 'curl/wget/tar/gzip/unzip', cmd: 'curl wget tar gzip unzip', installed: !!env.tools },
+    ...(env.packageGroups || []).map((g: any) => ({ key: g.id, label: g.name, desc: g.description, cmd: (g.packages || []).join(' '), installed: false })),
   ]
 
   return (
@@ -69,6 +70,7 @@ export default function EnvironmentPage() {
           { key: 'javaVersions', label: 'Java 多版本', children: <Space wrap>{(env.javaVersions || []).map((j: any) => <Tag key={j.version} color={j.path ? 'green' : 'default'}>Java {j.version}{j.path ? ' 已安装' : ' 未安装'}</Tag>)}</Space> },
           { key: 'steamcmd', label: 'SteamCMD', children: env.steamcmd ? <Tag color="green">已安装: {String(env.steamcmd)}</Tag> : <Tag color="default">未安装</Tag> },
           { key: 'tools', label: '常用工具', children: env.tools ? <Tag color="green">已安装</Tag> : <Tag color="default">未完整安装</Tag> },
+          { key: 'packageManagers', label: '包管理器', children: <Space wrap>{(env.packageManagers || []).map((p: any) => <Tag key={p.name} color={p.available ? 'green' : 'default'}>{p.displayName}{p.available ? ' 可用' : ' 不可用'}</Tag>)}</Space> },
         ]} />
       </Card>
       <Card title="安装环境">

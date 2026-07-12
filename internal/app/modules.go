@@ -107,7 +107,7 @@ func (s *Server) handleEnvironment(w http.ResponseWriter, r *http.Request) {
 			steamcmd = "/usr/local/steamcmd/steamcmd.sh"
 		}
 	}
-	writeJSON(w, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "java": java, "javaVersions": detectJavaVersions(), "steamcmd": steamcmd, "tools": detectTools()})
+	writeJSON(w, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "java": java, "javaVersions": detectJavaVersions(), "steamcmd": steamcmd, "tools": detectTools(), "packageManagers": detectPackageManagers(), "packageGroups": packageGroups()})
 }
 
 func detectJavaVersions() []map[string]string {
