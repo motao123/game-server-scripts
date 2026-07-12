@@ -38,13 +38,94 @@ type DeployOptions struct {
 	Version    string
 }
 
+type DeployPreflight struct {
+	Ready    bool     `json:"ready"`
+	Problems []string `json:"problems"`
+	Warnings []string `json:"warnings"`
+	SteamCMD string   `json:"steamcmd,omitempty"`
+}
+
 type DeployManager struct {
 	mu    sync.Mutex
 	tasks map[string]*DeployTask
+	store *DeployTaskStore
 }
 
-func NewDeployManager() *DeployManager {
-	return &DeployManager{tasks: map[string]*DeployTask{}}
+func NewDeployManager(store *DeployTaskStore) *DeployManager {
+	m := &DeployManager{tasks: map[string]*DeployTask{}, store: store}
+	if store == nil {
+		return m
+	}
+	if saved, err := store.Load(); err == nil {
+		for _, task := range saved {
+			if task.Status == "running" {
+				now := time.Now()
+				task.Status = "failed"
+				task.Error = "面板重启导致部署任务中断，请重试"
+				task.DoneAt = &now
+				task.Output += "面板重启导致部署任务中断，请重试。\n"
+			}
+			snapshot := task
+			m.tasks[task.ID] = &snapshot
+		}
+		m.persist()
+	}
+	return m
+}
+
+func (m *DeployManager) persist() {
+	if m.store == nil {
+		return
+	}
+	m.mu.Lock()
+	tasks := make([]DeployTask, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		tasks = append(tasks, task.Snapshot())
+	}
+	m.mu.Unlock()
+	_ = m.store.Save(tasks)
+}
+
+func (m *DeployManager) List() []DeployTask {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tasks := make([]DeployTask, 0, len(m.tasks))
+	for _, task := range m.tasks {
+		tasks = append(tasks, task.Snapshot())
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].StartedAt.After(tasks[j].StartedAt) })
+	return tasks
+}
+
+func (m *DeployManager) Preflight(game GameTemplate, path string) DeployPreflight {
+	result := DeployPreflight{Ready: true}
+	if _, err := ensureGameDeployable(game); err != nil {
+		result.Problems = append(result.Problems, err.Error())
+	}
+	if strings.TrimSpace(path) == "" {
+		result.Problems = append(result.Problems, "安装路径不能为空")
+	} else if !filepath.IsAbs(path) {
+		result.Problems = append(result.Problems, "安装路径必须是绝对路径")
+	} else if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		result.Problems = append(result.Problems, "安装路径不是目录: "+path)
+	}
+	if game.ID != "minecraft-java" {
+		steamcmd := lookPath("steamcmd")
+		if steamcmd == "" {
+			if _, err := os.Stat("/usr/local/steamcmd/steamcmd.sh"); err == nil {
+				steamcmd = "/usr/local/steamcmd/steamcmd.sh"
+			}
+		}
+		result.SteamCMD = steamcmd
+		if steamcmd == "" {
+			result.Problems = append(result.Problems, "SteamCMD 未安装，请先在环境管理安装")
+		}
+	}
+	if game.MemoryGB > 0 {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("建议至少预留 %dGB 内存", game.MemoryGB))
+	}
+	result.Ready = len(result.Problems) == 0
+	return result
 }
 
 func (m *DeployManager) Get(id string) *DeployTask {
@@ -80,12 +161,14 @@ func (m *DeployManager) Start(game GameTemplate, path string, instances *Instanc
 	m.mu.Lock()
 	m.tasks[id] = task
 	m.mu.Unlock()
+	m.persist()
 
 	go m.run(task, game, path, instances, options)
 	return task, nil
 }
 
 func (m *DeployManager) run(task *DeployTask, game GameTemplate, path string, instances *InstanceStore, options DeployOptions) {
+	defer m.persist()
 	spec, err := ensureGameDeployable(game)
 	if err != nil {
 		task.appendOutput(err.Error() + "\n")

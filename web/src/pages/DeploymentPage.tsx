@@ -18,6 +18,8 @@ export default function DeploymentPage() {
   const [steamcmd, setSteamcmd] = useState<string>('')
   const [target, setTarget] = useState<any | null>(null)
   const [deploy, setDeploy] = useState<DeployState | null>(null)
+  const [tasks, setTasks] = useState<any[]>([])
+  const [preflight, setPreflight] = useState<any | null>(null)
   const [loading, setLoading] = useState(false)
   const [deployPath, setDeployPath] = useState('')
   const [serverType, setServerType] = useState('')
@@ -25,22 +27,40 @@ export default function DeploymentPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function load() {
-    const [g, s, o] = await Promise.all([api<{ games: any[] }>('/api/games'), api<any>('/api/steamcmd/status'), api<{ templates: any[] }>('/api/online-templates')])
-    setGames(g.games || []); setSteamcmd(s.steamcmd || ''); setOnlineTemplates(o.templates || [])
+    const [g, s, o, t] = await Promise.all([api<{ games: any[] }>('/api/games'), api<any>('/api/steamcmd/status'), api<{ templates: any[] }>('/api/online-templates'), api<{ tasks: any[] }>('/api/game-deployment/tasks')])
+    setGames(g.games || []); setSteamcmd(s.steamcmd || ''); setOnlineTemplates(o.templates || []); setTasks(t.tasks || [])
   }
   useEffect(() => { load(); return () => { if (pollRef.current) clearInterval(pollRef.current) } }, [])
 
   function openDeploy(game: any) {
+    const path = game.defaultPath || ''
     setTarget(game)
-    setDeployPath(game.defaultPath || '')
+    setDeployPath(path)
     setServerType(game.serverTypes?.[0] || '')
     setVersion(game.version || '')
+    checkPreflight(game.id, path)
+  }
+
+  async function checkPreflight(gameId: string, path: string) {
+    try {
+      const result = await api<any>('/api/game-deployment/preflight', { method: 'POST', body: { gameId, path } })
+      setPreflight(result)
+      return result
+    } catch (e: any) {
+      setPreflight({ ready: false, problems: [e.message], warnings: [] })
+      return { ready: false }
+    }
   }
 
   async function startDeploy() {
     if (!target) return
     setLoading(true)
     try {
+      const check = await checkPreflight(target.id, deployPath)
+      if (!check.ready) {
+        message.error((check.problems || ['部署预检未通过']).join('；'))
+        return
+      }
       const d = await api<any>('/api/game-deployment/install', { method: 'POST', body: { gameId: target.id, path: deployPath, serverType, version } })
       setDeploy({ taskId: d.taskId, gameName: target.name, status: 'running', output: '', error: '' })
       setTarget(null)
@@ -63,6 +83,21 @@ export default function DeploymentPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  async function retry(task: any) {
+    setLoading(true)
+    try {
+      const d = await api<any>('/api/game-deployment/retry', { method: 'POST', body: { taskId: task.id } })
+      if (!d.ok) {
+        message.error((d.preflight?.problems || ['部署预检未通过']).join('；'))
+        return
+      }
+      setDeploy({ taskId: d.taskId, gameName: task.gameName, status: 'running', output: '', error: '' })
+      poll(d.taskId)
+      load()
+    } catch (e: any) { message.error(e.message) }
+    finally { setLoading(false) }
   }
 
   function poll(taskId: string) {
@@ -88,6 +123,14 @@ export default function DeploymentPage() {
         <Tag color={steamcmd ? 'green' : 'red'}>{steamcmd ? '已安装' : '未安装（请先在环境管理安装）'}</Tag>
         <span style={{ marginLeft: 16 }}>共 {games.length} 个游戏模板</span>
       </Card>
+      {tasks.length > 0 && <Card title="部署任务历史" className="section-card">
+        {tasks.slice(0, 8).map((item: any) => <div key={item.id} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '6px 0', borderBottom: '1px solid #f0f0f0' }}>
+          <b style={{ flex: 1 }}>{item.gameName}</b><span style={{ color: '#666' }}>{item.path}</span>
+          <Tag color={item.status === 'success' ? 'green' : item.status === 'failed' ? 'red' : 'blue'}>{item.status}</Tag>
+          {item.status === 'failed' && <Button size="small" loading={loading} onClick={() => retry(item)}>重试</Button>}
+          <Button size="small" onClick={() => { setDeploy({ taskId: item.id, gameName: item.gameName, status: item.status, output: item.output || '', error: item.error || '', instanceId: item.instanceId }); if (item.status === 'running') poll(item.id) }}>查看</Button>
+        </div>)}
+      </Card>}
       <Tabs items={[
         { key: 'games', label: '游戏模板', children: <Row gutter={[16, 16]}>
           {games.map(game => (
@@ -149,7 +192,13 @@ export default function DeploymentPage() {
         {target && (
           <div>
             <p>将部署 <b>{target.name}</b> 到以下路径：</p>
-            <Input value={deployPath} onChange={e => setDeployPath(e.target.value)} style={{ marginBottom: 12 }} />
+            <Input value={deployPath} onChange={e => { setDeployPath(e.target.value); checkPreflight(target.id, e.target.value) }} style={{ marginBottom: 12 }} />
+            {preflight && <div style={{ marginBottom: 12 }}>
+              <Tag color={preflight.ready ? 'green' : 'red'}>{preflight.ready ? '预检通过' : '预检未通过'}</Tag>
+              {preflight.steamcmd && <Tag>SteamCMD: {preflight.steamcmd}</Tag>}
+              {(preflight.problems || []).map((p: string) => <div key={p} style={{ color: '#C10015', fontSize: 12, marginTop: 4 }}>{p}</div>)}
+              {(preflight.warnings || []).map((p: string) => <div key={p} style={{ color: '#9A6700', fontSize: 12, marginTop: 4 }}>{p}</div>)}
+            </div>}
             {target.id === 'minecraft-java' && <Space direction="vertical" style={{ width: '100%', marginBottom: 12 }}>
               <Select value={serverType} onChange={setServerType} options={(target.serverTypes || []).map((t: string) => ({ value: t, label: t }))} />
               <Input value={version} onChange={e => setVersion(e.target.value)} placeholder="Minecraft 版本，如 1.21.4" />

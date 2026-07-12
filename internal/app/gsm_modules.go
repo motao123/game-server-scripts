@@ -86,8 +86,8 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 	if path == "" {
 		path = game.DefaultPath
 	}
-	if _, err := ensureGameDeployable(*game); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	if check := s.deploys.Preflight(*game, path); !check.Ready {
+		writeJSON(w, map[string]any{"ok": false, "preflight": check})
 		return
 	}
 	task, err := s.deploys.Start(*game, path, s.instances, DeployOptions{ServerType: body.ServerType, Version: body.Version})
@@ -101,6 +101,68 @@ func (s *Server) handleDeploymentInstall(w http.ResponseWriter, r *http.Request)
 		"message": fmt.Sprintf("已启动 %s 部署任务", game.Name),
 		"path":    path,
 	})
+}
+
+func (s *Server) deploymentGame(gameID string) (*GameTemplate, bool) {
+	for _, item := range s.games() {
+		if item.ID == gameID {
+			game := item
+			return &game, true
+		}
+	}
+	return nil, false
+}
+
+func (s *Server) handleDeploymentPreflight(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		GameID string `json:"gameId"`
+		Path   string `json:"path"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	game, ok := s.deploymentGame(body.GameID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "未知的游戏: "+body.GameID)
+		return
+	}
+	if body.Path == "" {
+		body.Path = game.DefaultPath
+	}
+	writeJSON(w, s.deploys.Preflight(*game, body.Path))
+}
+
+func (s *Server) handleDeploymentTasks(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, map[string]any{"tasks": s.deploys.List()})
+}
+
+func (s *Server) handleDeploymentRetry(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		TaskID string `json:"taskId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	old := s.deploys.Get(body.TaskID)
+	if old == nil {
+		writeError(w, http.StatusNotFound, "任务不存在")
+		return
+	}
+	if old.Status == "running" {
+		writeError(w, http.StatusConflict, "部署任务仍在运行")
+		return
+	}
+	game, ok := s.deploymentGame(old.GameID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "游戏模板已不存在，无法重试")
+		return
+	}
+	if check := s.deploys.Preflight(*game, old.Path); !check.Ready {
+		writeJSON(w, map[string]any{"ok": false, "preflight": check})
+		return
+	}
+	task, err := s.deploys.Start(*game, old.Path, s.instances, DeployOptions{ServerType: old.ServerType, Version: old.Version})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "taskId": task.ID})
 }
 
 func (s *Server) handleDeploymentStatus(w http.ResponseWriter, r *http.Request) {
