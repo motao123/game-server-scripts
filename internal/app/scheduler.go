@@ -132,45 +132,20 @@ func (s *Scheduler) runInstanceAction(action, id string) error {
 	}
 	switch action {
 	case "start":
-		return s.startInstanceForTask(inst)
+		_, err := s.app.runtime.Start(inst)
+		return err
 	case "stop":
-		return s.stopInstanceForTask(inst)
+		s.app.runtime.Stop(inst)
+		return nil
 	case "restart":
-		if err := s.stopInstanceForTask(inst); err != nil {
-			return err
-		}
+		s.app.runtime.Stop(inst)
 		updated, ok := s.app.instances.Get(id)
 		if !ok {
 			return fmt.Errorf("实例不存在")
 		}
-		return s.startInstanceForTask(updated)
+		_, err := s.app.runtime.Start(updated)
+		return err
 	default:
 		return fmt.Errorf("未知实例动作: %s", action)
 	}
-}
-
-func (s *Scheduler) startInstanceForTask(inst Instance) error {
-	if inst.StartCommand == "" {
-		return fmt.Errorf("启动命令为空")
-	}
-	out, err := runInstanceCommand(inst, inst.StartCommand)
-	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	s.app.instances.SetStatus(inst.ID, "running")
-	return nil
-}
-
-func (s *Scheduler) stopInstanceForTask(inst Instance) error {
-	if inst.Status == "stopped" {
-		return nil
-	}
-	if inst.StopCommand != "" && inst.StopCommand != "ctrl+c" {
-		out, err := runInstanceCommand(inst, inst.StopCommand)
-		if err != nil {
-			return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-		}
-	}
-	s.app.instances.SetStatus(inst.ID, "stopped")
-	return nil
 }
