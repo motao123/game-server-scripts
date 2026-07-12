@@ -42,7 +42,7 @@ type PluginSource struct {
 func (s *Server) pluginCatalog() []PluginCatalogItem {
 	catalog := loadPluginCatalog()
 	installed := map[string]PluginMeta{}
-	for _, plugin := range s.scanPlugins() {
+	for _, plugin := range s.plugins.scan() {
 		installed[plugin.ID] = plugin
 	}
 	for i := range catalog {
@@ -60,7 +60,7 @@ func (s *Server) pluginCatalog() []PluginCatalogItem {
 }
 
 func (s *Server) pluginsWithCatalog() []PluginMeta {
-	plugins := s.scanPlugins()
+	plugins := s.plugins.scan()
 	catalog := map[string]PluginCatalogItem{}
 	for _, item := range loadPluginCatalog() {
 		catalog[item.ID] = item

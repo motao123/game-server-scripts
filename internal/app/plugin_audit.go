@@ -87,5 +87,5 @@ func (s *PluginAuditStore) List(limit int) []PluginAuditEvent {
 
 func (s *Server) handlePluginAudit(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	writeJSON(w, map[string]any{"events": s.pluginAudit.List(limit)})
+	writeJSON(w, map[string]any{"events": s.plugins.auditStore().List(limit)})
 }

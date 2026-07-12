@@ -47,13 +47,13 @@ func (s *Server) handleCatalogUpdate(w http.ResponseWriter, r *http.Request) {
 	result, err := updateCatalog(body.Type, body.URL)
 	if err != nil {
 		if body.Type == "plugin" {
-			s.pluginAudit.Record(r, "catalog.plugin.update", "", "failed", err.Error(), map[string]any{"url": body.URL})
+			s.plugins.auditStore().Record(r, "catalog.plugin.update", "", "failed", err.Error(), map[string]any{"url": body.URL})
 		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if body.Type == "plugin" {
-		s.pluginAudit.Record(r, "catalog.plugin.update", "", "success", "插件市场已更新", map[string]any{"url": body.URL, "count": result["count"], "backup": result["backup"]})
+		s.plugins.auditStore().Record(r, "catalog.plugin.update", "", "success", "插件市场已更新", map[string]any{"url": body.URL, "count": result["count"], "backup": result["backup"]})
 	}
 	writeJSON(w, map[string]any{"ok": true, "result": result, "catalogs": s.catalogStatuses()})
 }

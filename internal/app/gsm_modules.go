@@ -315,11 +315,11 @@ func (s *Server) handlePluginToggle(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(state)
 	}
 	if err != nil {
-		s.pluginAudit.Record(r, "plugin.toggle", body.ID, "failed", err.Error(), map[string]any{"enabled": body.Enabled})
+		s.plugins.auditStore().Record(r, "plugin.toggle", body.ID, "failed", err.Error(), map[string]any{"enabled": body.Enabled})
 		writeError(w, 500, err.Error())
 		return
 	}
-	s.pluginAudit.Record(r, "plugin.toggle", body.ID, "success", "插件启用状态已更新", map[string]any{"enabled": body.Enabled})
+	s.plugins.auditStore().Record(r, "plugin.toggle", body.ID, "success", "插件启用状态已更新", map[string]any{"enabled": body.Enabled})
 	writeJSON(w, map[string]any{"ok": true})
 }
 func (s *Server) handleEnvironmentInstall(w http.ResponseWriter, r *http.Request) {

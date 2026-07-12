@@ -20,20 +20,20 @@ import (
 )
 
 type Server struct {
-	cfg         config.Config
-	auth        *auth.Manager
-	palworld    palworld.Service
-	httpSrv     *http.Server
-	instances   *InstanceStore
-	tasks       *TaskStore
-	terminal    *terminal.Manager
-	scheduler   *Scheduler
-	installs    *InstallManager
-	deploys     *DeployManager
-	fileTasks   *FileTaskManager
-	monitor     *Monitor
-	alerts      *AlertStore
-	pluginAudit *PluginAuditStore
+	cfg       config.Config
+	auth      *auth.Manager
+	palworld  palworld.Service
+	httpSrv   *http.Server
+	instances *InstanceStore
+	tasks     *TaskStore
+	terminal  *terminal.Manager
+	scheduler *Scheduler
+	installs  *InstallManager
+	deploys   *DeployManager
+	fileTasks *FileTaskManager
+	monitor   *Monitor
+	alerts    *AlertStore
+	plugins   *PluginManager
 }
 
 func NewServer(cfg config.Config) (*Server, error) {
@@ -51,7 +51,7 @@ func NewServer(cfg config.Config) (*Server, error) {
 	s.fileTasks = NewFileTaskManager()
 	s.monitor = NewMonitor()
 	s.alerts = NewAlertStore(filepath.Join(cfg.DataDir, "alert_rules.json"))
-	s.pluginAudit = NewPluginAuditStore(filepath.Join(cfg.DataDir, "plugin_audit.jsonl"))
+	s.plugins = NewPluginManager(cfg.DataDir)
 	return s, nil
 }
 

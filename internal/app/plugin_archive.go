@@ -50,7 +50,7 @@ func (s *Server) upgradePluginFromCatalog(item PluginCatalogItem) (PluginMeta, s
 	if _, err := os.Stat(filepath.Join(dir, ".enabled")); err == nil {
 		enabled = true
 	}
-	backup, err := s.backupPluginDir(item.ID)
+	backup, err := s.plugins.backup(item.ID)
 	if err != nil {
 		return PluginMeta{}, "", err
 	}
@@ -67,28 +67,6 @@ func (s *Server) upgradePluginFromCatalog(item PluginCatalogItem) (PluginMeta, s
 		_ = os.WriteFile(filepath.Join(dir, ".enabled"), []byte("1"), 0644)
 	}
 	return meta, backup, nil
-}
-
-func (s *Server) backupPluginDir(id string) (string, error) {
-	if !validPluginID(id) {
-		return "", fmt.Errorf("插件名称只允许字母数字下划线短横线")
-	}
-	src := filepath.Join(s.cfg.DataDir, "plugins", id)
-	if _, err := os.Stat(src); err != nil {
-		return "", err
-	}
-	base := filepath.Join(s.cfg.DataDir, "plugin_backups", id+"-"+time.Now().Format("20060102150405.000000000"))
-	dst := base
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return "", err
-	}
-	for i := 1; ; i++ {
-		if _, err := os.Stat(dst); os.IsNotExist(err) {
-			break
-		}
-		dst = fmt.Sprintf("%s-%d", base, i)
-	}
-	return dst, copyPluginDir(src, dst)
 }
 
 func (s *Server) installPluginFiles(item PluginCatalogItem, dir string) (PluginMeta, error) {
