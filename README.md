@@ -1,6 +1,6 @@
 # 游戏服务器管理面板
 
-Go + React 实现的游戏服务器管理面板，功能参考 [GameServerManager](https://github.com/GameServerManager)，样式参考 palworld-go 的 Material 明亮主题。后端单个 Go 二进制，前端 React + Vite + Ant Design，构建产物通过 `embed` 内嵌。
+Go + React 实现的游戏服务器管理面板。后端单个 Go 二进制，前端 React + Vite + Ant Design，构建产物通过 `embed` 内嵌。
 
 ## 功能模块
 
