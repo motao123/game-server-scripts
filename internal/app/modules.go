@@ -107,7 +107,36 @@ func (s *Server) handleEnvironment(w http.ResponseWriter, r *http.Request) {
 			steamcmd = "/usr/local/steamcmd/steamcmd.sh"
 		}
 	}
-	writeJSON(w, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "java": java, "steamcmd": steamcmd})
+	writeJSON(w, map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "java": java, "javaVersions": detectJavaVersions(), "steamcmd": steamcmd, "tools": detectTools()})
+}
+
+func detectJavaVersions() []map[string]string {
+	versions := []string{"8", "11", "17", "21", "25"}
+	items := []map[string]string{}
+	for _, version := range versions {
+		path := ""
+		candidates := []string{
+			filepath.Join("/usr/lib/jvm", "java-"+version+"-openjdk-amd64", "bin", "java"),
+			filepath.Join("/usr/lib/jvm", "java-"+version+"-openjdk", "bin", "java"),
+		}
+		for _, item := range candidates {
+			if st, err := os.Stat(item); err == nil && !st.IsDir() {
+				path = item
+				break
+			}
+		}
+		items = append(items, map[string]string{"version": version, "path": path, "package": "java" + version})
+	}
+	return items
+}
+
+func detectTools() bool {
+	for _, name := range []string{"curl", "wget", "tar", "gzip", "unzip"} {
+		if lookPath(name) == "" {
+			return false
+		}
+	}
+	return true
 }
 func (s *Server) handlePlugins(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"plugins": s.scanPlugins(), "enabled": true})

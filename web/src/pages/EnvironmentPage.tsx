@@ -51,10 +51,11 @@ export default function EnvironmentPage() {
     }, 1500)
   }
 
+  const javaPackages = (env.javaVersions || []).map((j: any) => ({ key: j.package, label: `Java ${j.version}`, desc: j.path ? `已安装: ${j.path}` : 'Minecraft Java 服务端可选运行时', cmd: `openjdk-${j.version}-jre-headless`, installed: !!j.path }))
   const packages = [
-    { key: 'java', label: 'Java 17', desc: 'Minecraft Java 等需要', cmd: 'openjdk-17-jre-headless' },
-    { key: 'steamcmd', label: 'SteamCMD', desc: 'Palworld/Valheim/Terraria 等 Steam 游戏需要', cmd: 'steamcmd' },
-    { key: 'tools', label: '常用工具', desc: 'curl/wget/tar/gzip/unzip', cmd: 'curl wget tar gzip unzip' },
+    ...javaPackages,
+    { key: 'steamcmd', label: 'SteamCMD', desc: 'Palworld/Valheim/Terraria 等 Steam 游戏需要', cmd: 'steamcmd', installed: !!env.steamcmd },
+    { key: 'tools', label: '常用工具', desc: 'curl/wget/tar/gzip/unzip', cmd: 'curl wget tar gzip unzip', installed: !!env.tools },
   ]
 
   return (
@@ -64,8 +65,10 @@ export default function EnvironmentPage() {
         <Descriptions column={1} bordered items={[
           { key: 'os', label: '操作系统', children: String(env.os || '-') },
           { key: 'arch', label: '架构', children: String(env.arch || '-') },
-          { key: 'java', label: 'Java', children: env.java ? <Tag color="green">已安装: {String(env.java)}</Tag> : <Tag color="default">未安装</Tag> },
+          { key: 'java', label: '当前 Java', children: env.java ? <Tag color="green">已安装: {String(env.java)}</Tag> : <Tag color="default">未安装</Tag> },
+          { key: 'javaVersions', label: 'Java 多版本', children: <Space wrap>{(env.javaVersions || []).map((j: any) => <Tag key={j.version} color={j.path ? 'green' : 'default'}>Java {j.version}{j.path ? ' 已安装' : ' 未安装'}</Tag>)}</Space> },
           { key: 'steamcmd', label: 'SteamCMD', children: env.steamcmd ? <Tag color="green">已安装: {String(env.steamcmd)}</Tag> : <Tag color="default">未安装</Tag> },
+          { key: 'tools', label: '常用工具', children: env.tools ? <Tag color="green">已安装</Tag> : <Tag color="default">未完整安装</Tag> },
         ]} />
       </Card>
       <Card title="安装环境">
@@ -83,7 +86,7 @@ export default function EnvironmentPage() {
                 disabled={task?.status === 'running' && task?.pkg !== p.key}
                 onClick={() => install(p.key)}
               >
-                {env[p.key === 'java' ? 'java' : p.key] ? '重装' : '安装'}
+                {p.installed ? '重装' : '安装'}
               </Button>
             </div>
           ))}
