@@ -24,6 +24,15 @@ func (s *Server) games() []GameTemplate {
 	return out
 }
 
+func reloadGameCatalog() []GameTemplate {
+	catalogCache.Lock()
+	defer catalogCache.Unlock()
+	catalogCache.games = loadGameCatalog()
+	out := make([]GameTemplate, len(catalogCache.games))
+	copy(out, catalogCache.games)
+	return out
+}
+
 func loadGameCatalog() []GameTemplate {
 	paths := []string{
 		filepath.Join("data", "game_catalog.json"),
