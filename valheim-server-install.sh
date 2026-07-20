@@ -394,7 +394,11 @@ setup_firewall() {
 
 start_server() {
     info "启动 Valheim 服务器..."
-    systemctl start "${SERVICE_NAME}"
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        systemctl restart "${SERVICE_NAME}"
+    else
+        systemctl start "${SERVICE_NAME}"
+    fi
     sleep 10
     systemctl is-active --quiet "${SERVICE_NAME}" && info "启动成功!" || warn "请等待初始化... journalctl -u ${SERVICE_NAME} -f"
 }

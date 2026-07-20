@@ -24,28 +24,31 @@ SERVICE_NAME="mc-server"
 MANAGER_SCRIPT="/usr/local/bin/mc-manager"
 
 # 服务器类型: paper / vanilla / fabric / forge
-SERVER_TYPE="paper"
+SERVER_TYPE="${SERVER_TYPE:-paper}"
 
 # 内存配置 (根据玩家数量调整)
-MC_MEMORY="4G"         # JVM 最大内存
-MC_MEMORY_MIN="1G"     # JVM 最小内存
+MC_MEMORY_WAS_SET="${MC_MEMORY+x}"
+MC_MEMORY_MIN_WAS_SET="${MC_MEMORY_MIN+x}"
+MC_MEMORY="${MC_MEMORY:-4G}"         # JVM 最大内存
+MC_MEMORY_MIN="${MC_MEMORY_MIN:-1G}" # JVM 最小内存
 
 # 版本 (留空=最新版)
-MC_VERSION=""
+MC_VERSION="${MC_VERSION:-}"
 
 # 服务器配置
-MC_PORT=25565
-MC_MAX_PLAYERS=20
-MC_MOTD="\\u00a7aMinecraft Server \\u00a77- Powered by Auto Installer"
-MC_DIFFICULTY="normal"
-MC_GAMEMODE="survival"
-MC_VIEW_DISTANCE=10
-MC_SIMULATION_DISTANCE=4
-MC_ONLINE_MODE="true"
-MC_PVP="true"
-MC_SEED=""
-MC_LEVEL_NAME="world"
-MC_RCON_PORT=25575
+MC_PORT="${MC_PORT:-25565}"
+MC_MAX_PLAYERS="${MC_MAX_PLAYERS:-20}"
+MC_MOTD="${MC_MOTD:-\\u00a7aMinecraft Server \\u00a77- Powered by Auto Installer}"
+MC_DIFFICULTY="${MC_DIFFICULTY:-normal}"
+MC_GAMEMODE="${MC_GAMEMODE:-survival}"
+MC_VIEW_DISTANCE="${MC_VIEW_DISTANCE:-10}"
+MC_SIMULATION_DISTANCE="${MC_SIMULATION_DISTANCE:-4}"
+MC_ONLINE_MODE="${MC_ONLINE_MODE:-true}"
+MC_PVP="${MC_PVP:-true}"
+MC_SEED="${MC_SEED:-}"
+MC_LEVEL_NAME="${MC_LEVEL_NAME:-world}"
+MC_ENABLE_RCON="${MC_ENABLE_RCON:-false}"
+MC_RCON_PORT="${MC_RCON_PORT:-25575}"
 MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 CREDENTIALS_FILE="/etc/minecraft/credentials.env"
@@ -115,9 +118,13 @@ check_resources() {
     # 自动根据系统内存调整 JVM 内存 (系统内存 - 1GB，最低 512M)
     local jvm_mem=$((mem_total - 1))
     [[ $jvm_mem -lt 1 ]] && jvm_mem=1
-    MC_MEMORY="${jvm_mem}G"
-    MC_MEMORY_MIN="$((jvm_mem / 2))G"
-    [[ "$MC_MEMORY_MIN" == "0G" ]] && MC_MEMORY_MIN="512M"
+    if [[ -z "$MC_MEMORY_WAS_SET" ]]; then
+        MC_MEMORY="${jvm_mem}G"
+    fi
+    if [[ -z "$MC_MEMORY_MIN_WAS_SET" ]]; then
+        MC_MEMORY_MIN="$((jvm_mem / 2))G"
+        [[ "$MC_MEMORY_MIN" == "0G" ]] && MC_MEMORY_MIN="512M"
+    fi
 
     if [[ $mem_total -lt 4 ]]; then
         warn "内存不足 4GB，已自动调整 JVM 内存为 ${MC_MEMORY}，建议升级到 4GB+"
@@ -158,10 +165,13 @@ user_config() {
     local available_versions=""
     local latest_version=""
     info "获取可用版本列表..."
-    available_versions=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-        python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(d['versions'][-10:]))" 2>/dev/null || true)
-    latest_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
+    local paper_project_json
+    paper_project_json=$(curl -fsSL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 \
+        "https://fill.papermc.io/v3/projects/paper" 2>/dev/null || true)
+    if [[ -n "$paper_project_json" ]]; then
+        available_versions=$(printf '%s' "$paper_project_json" | python3 -c "import sys,json; d=json.load(sys.stdin); v=d['versions'].get('1.21',[]); print(' '.join(v[:10]))" 2>/dev/null || true)
+        latest_version=$(printf '%s' "$paper_project_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions']['1.21'][0])" 2>/dev/null || true)
+    fi
 
     echo -e "\n  ${CYAN}当前默认配置:${NC}"
     echo -e "  ┌─────────────────────────────────────────────┐"
@@ -212,6 +222,9 @@ user_config() {
 
         read -rp "  正版验证 (true/false) [${MC_ONLINE_MODE}]: " input
         MC_ONLINE_MODE="${input:-$MC_ONLINE_MODE}"
+
+        read -rp "  启用 RCON (true/false，默认不启用) [${MC_ENABLE_RCON}]: " input
+        MC_ENABLE_RCON="${input:-$MC_ENABLE_RCON}"
     fi
 
     # 自动生成 RCON 密码
@@ -361,12 +374,11 @@ download_server() {
 
     case $SERVER_TYPE in
         paper)
-            local paper_version paper_url paper_build
+            local paper_version paper_url paper_build paper_sha256 paper_build_json
             local download_ok=false
 
-            # 默认版本 (已知可用的稳定版)
-            local default_version="1.21.4"
-            local default_build="232"
+            # Paper v3 API exposes current stable builds and checksums.
+            local default_version="1.21.11"
 
             if [[ "$use_bmcl" == "true" ]]; then
                 # 国内: BMCL 镜像
@@ -391,48 +403,33 @@ download_server() {
                 fi
             fi
 
-            # 官方 PaperMC API (国内失败或国外)
+            # 官方 PaperMC v3 API
             if [[ "$download_ok" != "true" ]]; then
                 if [[ -n "$MC_VERSION" ]]; then
                     paper_version="$MC_VERSION"
                 else
-                    paper_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-                        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
+                    paper_version=$(curl -fsSL --connect-timeout 20 --retry 3 --max-time 15 \
+                        "https://fill.papermc.io/v3/projects/paper" 2>/dev/null | \
+                        python3 -c "import sys,json; print(json.load(sys.stdin)['versions']['1.21'][0])" 2>/dev/null || true)
+                fi
+                [[ -z "$paper_version" ]] && paper_version="$default_version"
+
+                paper_build_json=$(curl -fsSL --connect-timeout 20 --retry 3 --max-time 20 \
+                    "https://fill.papermc.io/v3/projects/paper/versions/${paper_version}/builds/latest" 2>/dev/null || true)
+                if [[ -n "$paper_build_json" ]]; then
+                    read -r paper_build paper_url paper_sha256 < <(printf '%s' "$paper_build_json" | python3 -c \
+                        "import sys,json; d=json.load(sys.stdin); x=d['downloads']['server:default']; print(d['id'],x['url'],x['checksums']['sha256'])" 2>/dev/null || true)
                 fi
 
-                if [[ -z "$paper_version" ]]; then
-                    paper_version="$default_version"
-                fi
-
-                paper_build=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null || true)
-
-                if [[ -z "$paper_build" ]]; then
-                    # API 也失败，使用默认版本的已知构建
-                    paper_version="$default_version"
-                    paper_build="$default_build"
-                fi
-
-                paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
-                info "PaperMC 版本: ${paper_version}, 构建: ${paper_build}"
+                info "PaperMC 版本: ${paper_version}, 构建: ${paper_build:-未知}"
                 jar_file="${MC_DIR}/paper.jar"
-                if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                if [[ -n "${paper_url:-}" ]] && \
+                   curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$paper_url" && \
+                   [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]] && \
+                   echo "${paper_sha256}  ${jar_file}" | sha256sum -c - >/dev/null; then
                     download_ok=true
-                fi
-            fi
-
-            # 最终兜底仍通过构建 API 获取真实构建号，避免伪 latest URL。
-            if [[ "$download_ok" != "true" ]]; then
-                warn "PaperMC 下载失败，重试默认稳定版本..."
-                paper_version="$default_version"
-                paper_build=$(set +o pipefail; curl -fsSL --max-time 15 \
-                    "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); b=[x for x in d['builds'] if x['channel']=='default']; print(b[-1]['build'])" 2>/dev/null || true)
-                [[ -z "$paper_build" ]] && paper_build="$default_build"
-                paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
-                jar_file="${MC_DIR}/paper.jar"
-                if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
-                    download_ok=true
+                else
+                    rm -f "$jar_file"
                 fi
             fi
 
@@ -702,7 +699,7 @@ configure_server() {
 server-port=${MC_PORT}
 server-ip=
 query.port=${MC_PORT}
-enable-rcon=true
+enable-rcon=${MC_ENABLE_RCON}
 rcon.port=${MC_RCON_PORT}
 rcon.password=${MC_RCON_PASSWORD}
 enable-query=false
@@ -886,6 +883,7 @@ CREDENTIALS_FILE="/etc/minecraft/credentials.env"
 source "$CREDENTIALS_FILE"
 RCON_PORT="$MC_RCON_PORT"
 RCON_PASSWORD="$MC_RCON_PASSWORD"
+RCON_ENABLED="${MC_ENABLE_RCON:-false}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -942,7 +940,11 @@ cmd_cmd() {
         echo "用法: mc-manager cmd <服务器命令>"
         return 1
     fi
-    if command -v mcrcon &>/dev/null; then
+    if [[ "$RCON_ENABLED" != "true" ]]; then
+        echo -e "${YELLOW}RCON 未启用；设置 MC_ENABLE_RCON=true 后重新安装或手动配置。${NC}"
+        return 1
+    fi
+    if [[ "$RCON_ENABLED" == "true" ]] && command -v mcrcon &>/dev/null; then
         mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "$*"
     else
         echo -e "${YELLOW}未安装 mcrcon，无法发送命令。可安装 mcrcon 后重试。${NC}"
@@ -978,14 +980,14 @@ cmd_backup() {
     echo "正在备份..."
 
     # 先保存世界（若安装了 mcrcon）
-    if command -v mcrcon &>/dev/null; then
+    if [[ "$RCON_ENABLED" == "true" ]] && command -v mcrcon &>/dev/null; then
         mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "save-off" "save-all" 2>/dev/null || true
         sleep 3
     fi
 
     tar -czf "$backup_file" -C "${MC_DIR}" world 2>/dev/null
 
-    if command -v mcrcon &>/dev/null; then
+    if [[ "$RCON_ENABLED" == "true" ]] && command -v mcrcon &>/dev/null; then
         mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "save-on" 2>/dev/null || true
     fi
 
@@ -1029,14 +1031,14 @@ cmd_update() {
     case "$server_type" in
         paper)
             jar_file="${MC_DIR}/paper.jar"
-            local paper_version paper_build
-            paper_version=$(curl -fsSL --max-time 20 "https://api.papermc.io/v2/projects/paper" | python3 -c "import sys,json; print(json.load(sys.stdin)['versions'][-1])") || {
+            local paper_version paper_build_json paper_sha256
+            paper_version=$(curl -fsSL --max-time 20 "https://fill.papermc.io/v3/projects/paper" | python3 -c "import sys,json; print(json.load(sys.stdin)['versions']['1.21'][0])") || {
                 $was_active && systemctl start "$SERVICE" || true; return 1;
             }
-            paper_build=$(curl -fsSL --max-time 20 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" | python3 -c "import sys,json; d=json.load(sys.stdin); print([b for b in d['builds'] if b['channel']=='default'][-1]['build'])") || {
+            paper_build_json=$(curl -fsSL --max-time 20 "https://fill.papermc.io/v3/projects/paper/versions/${paper_version}/builds/latest") || {
                 $was_active && systemctl start "$SERVICE" || true; return 1;
             }
-            url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
+            read -r url paper_sha256 < <(printf '%s' "$paper_build_json" | python3 -c "import sys,json; x=json.load(sys.stdin)['downloads']['server:default']; print(x['url'],x['checksums']['sha256'])")
             ;;
         vanilla)
             jar_file="${MC_DIR}/server.jar"
@@ -1061,7 +1063,8 @@ cmd_update() {
     tmp_file="${jar_file}.new"
     rm -f "$tmp_file"
     if ! curl -fL --connect-timeout 20 --retry 3 --max-time 300 -o "$tmp_file" "$url" || \
-       [[ $(stat -c%s "$tmp_file" 2>/dev/null || echo 0) -lt 500000 ]]; then
+       [[ $(stat -c%s "$tmp_file" 2>/dev/null || echo 0) -lt 500000 ]] || \
+       { [[ "$server_type" == "paper" ]] && ! echo "${paper_sha256}  ${tmp_file}" | sha256sum -c - >/dev/null; }; then
         rm -f "$tmp_file"
         echo -e "${RED}下载或文件校验失败，保留原版本${NC}" >&2
         $was_active && systemctl start "$SERVICE" || true
@@ -1566,7 +1569,11 @@ setup_firewall() {
 # ==================== 启动服务器 ====================
 start_server() {
     info "启动 Minecraft 服务器..."
-    systemctl start "${SERVICE_NAME}"
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        systemctl restart "${SERVICE_NAME}"
+    else
+        systemctl start "${SERVICE_NAME}"
+    fi
     sleep 10
 
     if systemctl is-active --quiet "${SERVICE_NAME}"; then
@@ -1594,8 +1601,11 @@ show_result() {
     echo ""
     echo -e "  服务器类型:  ${CYAN}${SERVER_TYPE}${NC}"
     echo -e "  服务器地址:  ${CYAN}${ip_addr}:${MC_PORT}${NC}"
-    echo -e "  RCON 端口:   ${CYAN}${MC_RCON_PORT}${NC}"
-    echo -e "  RCON 密码:   ${CYAN}${MC_RCON_PASSWORD}${NC}"
+    echo -e "  RCON 状态:   ${CYAN}${MC_ENABLE_RCON}${NC}"
+    if [[ "$MC_ENABLE_RCON" == "true" ]]; then
+        echo -e "  RCON 端口:   ${CYAN}${MC_RCON_PORT}${NC}（未放行防火墙）"
+        echo -e "  RCON 密码:   ${CYAN}${MC_RCON_PASSWORD}${NC}"
+    fi
     echo ""
     echo -e "  配置文件:    ${MC_DIR}/server.properties"
     echo -e "  世界目录:    ${MC_DIR}/world"
@@ -1630,7 +1640,9 @@ show_result() {
     echo -e "  │    端口      │   协议   │         用途               │"
     echo -e "  ├──────────────┼──────────┼────────────────────────────┤"
     echo -e "  │    ${MC_PORT}     │   TCP    │  游戏主端口 (必须)         │"
-    echo -e "  │    ${MC_RCON_PORT}     │   TCP    │  RCON（仅本机/SSH隧道）      │"
+    if [[ "$MC_ENABLE_RCON" == "true" ]]; then
+        echo -e "  │    ${MC_RCON_PORT}     │   TCP    │  RCON（仅本机/SSH隧道）      │"
+    fi
     echo -e "  └──────────────┴──────────┴────────────────────────────┘"
     echo ""
     echo -e "  ${CYAN}配置方式:${NC}"
@@ -1659,6 +1671,7 @@ main() {
     mkdir -p "$(dirname "$CREDENTIALS_FILE")"
     umask 077
     {
+        printf 'MC_ENABLE_RCON=%q\n' "$MC_ENABLE_RCON"
         printf 'MC_RCON_PORT=%q\n' "$MC_RCON_PORT"
         printf 'MC_RCON_PASSWORD=%q\n' "$MC_RCON_PASSWORD"
     } > "$CREDENTIALS_FILE"

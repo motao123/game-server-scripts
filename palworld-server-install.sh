@@ -1243,7 +1243,11 @@ EOF
 # ==================== 启动服务器 ====================
 start_server() {
 
-    systemctl start "${SERVICE_NAME}"
+    if systemctl is-active --quiet "${SERVICE_NAME}"; then
+        systemctl restart "${SERVICE_NAME}"
+    else
+        systemctl start "${SERVICE_NAME}"
+    fi
     sleep 8
 
     if systemctl is-active --quiet "${SERVICE_NAME}"; then
