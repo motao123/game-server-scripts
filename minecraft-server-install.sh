@@ -6,6 +6,7 @@
 #============================================================
 
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 # ==================== 颜色定义 ====================
 RED='\033[0;31m'
@@ -45,7 +46,9 @@ MC_PVP="true"
 MC_SEED=""
 MC_LEVEL_NAME="world"
 MC_RCON_PORT=25575
-MC_RCON_PASSWORD=""
+MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-}"
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
+CREDENTIALS_FILE="/etc/minecraft/credentials.env"
 
 # JVM 优化参数 (Aikar's Flags - 推荐)
 # 参考: https://aikar.co/2018/07/02/tuning-the-jvm-g1gc-garbage-collector-flags-for-minecraft/
@@ -123,6 +126,15 @@ check_resources() {
 
 # ==================== 用户配置 ====================
 user_config() {
+    if [[ "$NONINTERACTIVE" == "1" ]]; then
+        info "非交互模式：服务器类型 ${SERVER_TYPE}，使用默认值/环境变量"
+        if [[ -z "$MC_RCON_PASSWORD" ]]; then
+            MC_RCON_PASSWORD=$(set +o pipefail; head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 20)
+            MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-mc$(date +%s)}"
+        fi
+        return
+    fi
+
     echo -e "\n${CYAN}${BOLD}========== 服务器配置 ==========${NC}\n"
 
     echo -e "  ${CYAN}选择服务器类型:${NC}"
@@ -146,9 +158,9 @@ user_config() {
     local available_versions=""
     local latest_version=""
     info "获取可用版本列表..."
-    available_versions=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+    available_versions=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
         python3 -c "import sys,json; d=json.load(sys.stdin); print(' '.join(d['versions'][-10:]))" 2>/dev/null || true)
-    latest_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+    latest_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
         python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
 
     echo -e "\n  ${CYAN}当前默认配置:${NC}"
@@ -202,9 +214,11 @@ user_config() {
         MC_ONLINE_MODE="${input:-$MC_ONLINE_MODE}"
     fi
 
-    # 自动生成 RCON 密码（临时关闭 pipefail 防止 SIGPIPE 导致脚本退出）
-    MC_RCON_PASSWORD=$(set +o pipefail; head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)
-    MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-mc$(date +%s)}"
+    # 自动生成 RCON 密码
+    if [[ -z "$MC_RCON_PASSWORD" ]]; then
+        MC_RCON_PASSWORD=$(set +o pipefail; head -c 24 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 20)
+        MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-mc$(date +%s)}"
+    fi
 
     echo ""
     info "最终配置:"
@@ -223,7 +237,7 @@ user_config() {
 install_deps() {
     info "安装依赖..."
     apt-get update -y
-    apt-get install -y screen curl wget jq
+    apt-get install -y curl wget jq
 }
 
 # ==================== 安装 Java ====================
@@ -286,7 +300,7 @@ install_java() {
 
         for url in "${java_urls[@]}"; do
             info "尝试下载: ${url}"
-            if curl -sL --max-time 300 -o "$tmp_java" "$url" && [[ $(stat -c%s "$tmp_java" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+            if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$tmp_java" "$url" && [[ $(stat -c%s "$tmp_java" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                 download_ok=true
                 break
             fi
@@ -359,7 +373,7 @@ download_server() {
                 if [[ -n "$MC_VERSION" ]]; then
                     paper_version="$MC_VERSION"
                 else
-                    paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    paper_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
                         python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
                 fi
 
@@ -368,7 +382,7 @@ download_server() {
                     paper_url="https://bmclapidoc.bangbang93.com/paper/${paper_version}/latest/download"
                     info "BMCL Paper 版本: ${paper_version}"
                     jar_file="${MC_DIR}/paper.jar"
-                    if curl -sL --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                    if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                         download_ok=true
                     else
                         warn "BMCL 下载失败或文件异常，尝试官方源..."
@@ -382,7 +396,7 @@ download_server() {
                 if [[ -n "$MC_VERSION" ]]; then
                     paper_version="$MC_VERSION"
                 else
-                    paper_version=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
+                    paper_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
                         python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null || true)
                 fi
 
@@ -390,7 +404,7 @@ download_server() {
                     paper_version="$default_version"
                 fi
 
-                paper_build=$(set +o pipefail; curl -sL --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
+                paper_build=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
                     python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null || true)
 
                 if [[ -z "$paper_build" ]]; then
@@ -402,17 +416,22 @@ download_server() {
                 paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
                 info "PaperMC 版本: ${paper_version}, 构建: ${paper_build}"
                 jar_file="${MC_DIR}/paper.jar"
-                if curl -sL --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 180 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                     download_ok=true
                 fi
             fi
 
-            # 最终兜底: 直接用默认版本的最新构建
+            # 最终兜底仍通过构建 API 获取真实构建号，避免伪 latest URL。
             if [[ "$download_ok" != "true" ]]; then
-                warn "PaperMC API 下载失败，使用默认版本..."
-                paper_url="https://api.papermc.io/v2/projects/paper/versions/${default_version}/builds/latest/downloads/paper-${default_version}-latest.jar"
+                warn "PaperMC 下载失败，重试默认稳定版本..."
+                paper_version="$default_version"
+                paper_build=$(set +o pipefail; curl -fsSL --max-time 15 \
+                    "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
+                    python3 -c "import sys,json; d=json.load(sys.stdin); b=[x for x in d['builds'] if x['channel']=='default']; print(b[-1]['build'])" 2>/dev/null || true)
+                [[ -z "$paper_build" ]] && paper_build="$default_build"
+                paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
                 jar_file="${MC_DIR}/paper.jar"
-                if curl -sL --max-time 300 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$paper_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                     download_ok=true
                 fi
             fi
@@ -434,7 +453,7 @@ download_server() {
                 if [[ -n "$MC_VERSION" ]]; then
                     mc_version="$MC_VERSION"
                 else
-                    mc_version=$(set +o pipefail; curl -sL --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
+                    mc_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
                         python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
                 fi
 
@@ -447,7 +466,7 @@ download_server() {
             # 国外或 BMCL 失败: 官方 Mojang API
             if [[ -z "$server_jar_url" ]]; then
                 local version_json_url
-                version_json_url=$(set +o pipefail; curl -sL --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
+                version_json_url=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
                     python3 -c "
 import sys,json
 d=json.load(sys.stdin)
@@ -459,7 +478,7 @@ for v in d['versions']:
 " 2>/dev/null || true)
 
                 if [[ -n "$version_json_url" ]]; then
-                    server_jar_url=$(set +o pipefail; curl -sL --max-time 15 "$version_json_url" 2>/dev/null | \
+                    server_jar_url=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "$version_json_url" 2>/dev/null | \
                         python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null || true)
                 fi
             fi
@@ -471,7 +490,7 @@ for v in d['versions']:
 
             info "下载地址: ${server_jar_url}"
             jar_file="${MC_DIR}/server.jar"
-            if curl -sL --max-time 300 -o "$jar_file" "$server_jar_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+            if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$server_jar_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
                 download_ok=true
             fi
 
@@ -492,7 +511,7 @@ for v in d['versions']:
             else
                 # 获取最新 MC 版本
                 local latest_mc
-                latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
+                latest_mc=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
                     python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null || true)
                 [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
             fi
@@ -503,7 +522,7 @@ for v in d['versions']:
             local fabric_url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/${fabric_version}/${loader_version}/server/jar"
             jar_file="${MC_DIR}/fabric-server.jar"
 
-            if curl -sL --max-time 180 -o "$jar_file" "$fabric_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 500000 ]]; then
+            if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 180 -o "$jar_file" "$fabric_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 500000 ]]; then
                 download_ok=true
             fi
 
@@ -511,7 +530,7 @@ for v in d['versions']:
             if [[ "$download_ok" != "true" ]]; then
                 warn "直接下载失败，尝试使用安装器..."
                 local installer_jar="/tmp/fabric-installer.jar"
-                curl -sL --max-time 60 -o "$installer_jar" "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar"
+                curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 60 -o "$installer_jar" "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar"
                 if [[ -f "$installer_jar" ]] && [[ $(stat -c%s "$installer_jar" 2>/dev/null || echo 0) -gt 10000 ]]; then
                     sudo -u "$MC_USER" java -jar "$installer_jar" server -dir "$MC_DIR" -mcversion "$mc_version" -loader "$fabric_version" -downloadMinecraft 2>/dev/null
                     if [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
@@ -539,14 +558,14 @@ for v in d['versions']:
             else
                 # 获取最新 MC 版本
                 local latest_mc
-                latest_mc=$(set +o pipefail; curl -sL --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
+                latest_mc=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
                     python3 -c "import sys,json; d=json.load(sys.stdin); versions=sorted(d.keys(), reverse=True); print(versions[0])" 2>/dev/null || true)
                 [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
             fi
 
             # 获取该 MC 版本的最新 Forge 版本
             local forge_versions_json
-            forge_versions_json=$(set +o pipefail; curl -sL --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
+            forge_versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
                 python3 -c "
 import sys,json
 d=json.load(sys.stdin)
@@ -563,7 +582,7 @@ if v in d:
             local installer_jar="/tmp/forge-installer.jar"
             local forge_url="https://maven.minecraftforge.net/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-installer.jar"
 
-            curl -sL --max-time 120 -o "$installer_jar" "$forge_url"
+            curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 120 -o "$installer_jar" "$forge_url"
 
             if [[ ! -f "$installer_jar" ]] || [[ $(stat -c%s "$installer_jar" 2>/dev/null || echo 0) -lt 100000 ]]; then
                 error "Forge 安装器下载失败"
@@ -577,15 +596,20 @@ if v in d:
             sudo -u "$MC_USER" java -jar "$installer_jar" --installServer . 2>/dev/null
             rm -f "$installer_jar"
 
-            # Forge 安装后会生成 forge-xxx.jar 或 run.sh
-            local forge_jar
-            forge_jar=$(ls "${MC_DIR}"/forge-*.jar 2>/dev/null | head -1)
-            if [[ -n "$forge_jar" ]]; then
-                jar_file="$forge_jar"
+            # Forge installation is driven by its generated run.sh/argument files.
+            if [[ -x "${MC_DIR}/run.sh" ]]; then
+                jar_file="${MC_DIR}/run.sh"
                 download_ok=true
-            elif [[ -f "${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar" ]]; then
-                jar_file="${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar"
-                download_ok=true
+            else
+                local forge_jar
+                forge_jar=$(find "$MC_DIR" -maxdepth 1 -type f -name 'forge-*.jar' -print -quit 2>/dev/null || true)
+                if [[ -n "$forge_jar" ]]; then
+                    jar_file="$forge_jar"
+                    download_ok=true
+                elif [[ -f "${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar" ]]; then
+                    jar_file="${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar"
+                    download_ok=true
+                fi
             fi
 
             if [[ "$download_ok" != "true" ]]; then
@@ -624,9 +648,13 @@ EOF
         *)       jar_file="server.jar" ;;
     esac
 
-    # 后台启动，等待 server.properties 生成后自动停止 (用最低内存避免 OOM)
-    sudo -u "$MC_USER" java -Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY_MIN} -jar "$jar_file" --nogui &
-    local java_pid=$!
+    local java_pid
+    if [[ "$SERVER_TYPE" == "forge" && -x "${MC_DIR}/run.sh" ]]; then
+        sudo -u "$MC_USER" env JAVA_ARGS="-Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY_MIN}" bash "${MC_DIR}/run.sh" --nogui &
+    else
+        sudo -u "$MC_USER" java -Xms${MC_MEMORY_MIN} -Xmx${MC_MEMORY_MIN} -jar "$jar_file" --nogui &
+    fi
+    java_pid=$!
 
     # 等待 server.properties 生成 (最多 180 秒)
     local wait_count=0
@@ -640,10 +668,15 @@ EOF
     done
 
     # 停止服务器
-    kill "$java_pid" 2>/dev/null || true
-    sleep 3
-    kill -9 "$java_pid" 2>/dev/null || true
-    pkill -f "java.*${jar_file}" 2>/dev/null || true
+    kill -TERM "$java_pid" 2>/dev/null || true
+    # Only wait for the exact process started above; never kill other Java instances.
+    local stop_wait=0
+    while kill -0 "$java_pid" 2>/dev/null && [[ $stop_wait -lt 10 ]]; do
+        sleep 1
+        stop_wait=$((stop_wait + 1))
+    done
+    kill -KILL "$java_pid" 2>/dev/null || true
+    wait "$java_pid" 2>/dev/null || true
     sleep 2
 
     chown -R "${MC_USER}:${MC_USER}" "$MC_DIR"
@@ -751,12 +784,11 @@ create_start_script() {
         vanilla) jar_file="server.jar" ;;
         fabric)  jar_file="fabric-server.jar" ;;
         forge)
-            # Forge 安装后 jar 文件名带版本号，需要查找
-            jar_file=$(ls "${MC_DIR}"/forge-*.jar 2>/dev/null | head -1)
-            if [[ -z "$jar_file" ]]; then
-                jar_file="forge-server.jar"
+            if [[ -x "${MC_DIR}/run.sh" ]]; then
+                jar_file="run.sh"
             else
-                jar_file=$(basename "$jar_file")
+                jar_file=$(find "${MC_DIR}" -maxdepth 1 -type f -name 'forge-*.jar' -printf '%f\n' -quit 2>/dev/null || true)
+                [[ -z "$jar_file" ]] && { error "Forge 启动文件不存在"; exit 1; }
             fi
             ;;
     esac
@@ -765,11 +797,15 @@ create_start_script() {
 #!/bin/bash
 cd "${MC_DIR}"
 
-exec screen -DmS mc-server java \\
-    -Xms${MC_MEMORY_MIN} \\
-    -Xmx${MC_MEMORY} \\
-    ${JVM_FLAGS[*]} \\
-    -jar ${jar_file} ${extra_args}
+if [[ "${SERVER_TYPE}" == "forge" && "${jar_file}" == "run.sh" ]]; then
+    exec ./run.sh --nogui
+else
+    exec java \\
+        -Xms${MC_MEMORY_MIN} \\
+        -Xmx${MC_MEMORY} \\
+        ${JVM_FLAGS[*]} \\
+        -jar "${jar_file}" ${extra_args}
+fi
 STARTSCRIPT
 
     chmod +x "${MC_DIR}/start.sh"
@@ -781,10 +817,17 @@ STARTSCRIPT
 create_systemd_service() {
     info "创建 systemd 服务..."
 
-    # 计算内存限制 (JVM 内存 + 1G 余量)
+    # systemd 支持 K/M/G/T 后缀，直接在用户配置上增加固定运行时余量。
     local mem_limit
-    mem_limit=$(echo "$MC_MEMORY" | sed 's/G//')
-    mem_limit=$((mem_limit + 1))G
+    case "$MC_MEMORY" in
+        *[Gg]) mem_limit="$(( ${MC_MEMORY%[Gg]} + 1 ))G" ;;
+        *[Mm]) mem_limit="$(( ${MC_MEMORY%[Mm]} + 1024 ))M" ;;
+        *[Kk]) mem_limit="$(( ${MC_MEMORY%[Kk]} + 1048576 ))K" ;;
+        *)
+            error "JVM 内存格式无效: ${MC_MEMORY}（示例: 4G 或 4096M）"
+            exit 1
+            ;;
+    esac
 
     cat > "/etc/systemd/system/${SERVICE_NAME}.service" << EOF
 [Unit]
@@ -799,7 +842,8 @@ User=${MC_USER}
 Group=${MC_USER}
 WorkingDirectory=${MC_DIR}
 ExecStart=${MC_DIR}/start.sh
-ExecStop=/usr/bin/screen -S mc-server -X stuff "stop\n"
+ExecStop=/bin/kill -SIGINT \$MAINPID
+TimeoutStopSec=120
 
 Restart=on-failure
 RestartSec=10
@@ -811,7 +855,7 @@ MemoryHigh=${mem_limit}
 OOMScoreAdjust=-500
 
 ProtectSystem=strict
-ReadWritePaths=${MC_DIR} /run/screen
+ReadWritePaths=${MC_DIR}
 PrivateTmp=true
 NoNewPrivileges=true
 
@@ -838,8 +882,10 @@ create_manager_script() {
 
 SERVICE="mc-server"
 MC_DIR="/opt/minecraft"
-RCON_PORT=25575
-RCON_PASSWORD="RCON_PASS_PLACEHOLDER"
+CREDENTIALS_FILE="/etc/minecraft/credentials.env"
+source "$CREDENTIALS_FILE"
+RCON_PORT="$MC_RCON_PORT"
+RCON_PASSWORD="$MC_RCON_PASSWORD"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -858,7 +904,7 @@ show_help() {
     echo "  restart     重启服务器"
     echo "  status      查看状态"
     echo "  logs        实时日志"
-    echo "  console     进入服务器控制台 (Ctrl+A D 退出)"
+    echo "  console     显示控制台替代方式"
     echo "  cmd <命令>  执行服务器命令"
     echo "  players     查看在线玩家"
     echo "  say <消息>  广播消息"
@@ -886,8 +932,9 @@ cmd_status()  { systemctl status "$SERVICE" --no-pager; }
 cmd_logs()    { journalctl -u "$SERVICE" -f --no-pager; }
 
 cmd_console() {
-    echo -e "${YELLOW}进入服务器控制台，按 Ctrl+A 然后按 D 退出${NC}"
-    su - minecraft -c "screen -r mc-server" 2>/dev/null || echo "服务器未在 screen 中运行"
+    echo -e "${YELLOW}systemd 直接管理 Java 进程，不再使用 screen 控制台。${NC}"
+    echo "请使用: mc-manager cmd <命令> 或 journalctl -u $SERVICE -f"
+    return 1
 }
 
 cmd_cmd() {
@@ -895,8 +942,12 @@ cmd_cmd() {
         echo "用法: mc-manager cmd <服务器命令>"
         return 1
     fi
-    su - minecraft -c "screen -S mc-server -X stuff '$*\n'" 2>/dev/null || \
-        echo -e "${YELLOW}无法发送命令，请使用 mc-manager console 进入控制台${NC}"
+    if command -v mcrcon &>/dev/null; then
+        mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "$*"
+    else
+        echo -e "${YELLOW}未安装 mcrcon，无法发送命令。可安装 mcrcon 后重试。${NC}"
+        return 1
+    fi
 }
 
 cmd_players() { cmd_cmd "list"; }
@@ -926,14 +977,17 @@ cmd_backup() {
     mkdir -p "$backup_dir"
     echo "正在备份..."
 
-    # 先保存世界
-    su - minecraft -c "screen -S mc-server -X stuff 'save-off\n'" 2>/dev/null
-    su - minecraft -c "screen -S mc-server -X stuff 'save-all\n'" 2>/dev/null
-    sleep 3
+    # 先保存世界（若安装了 mcrcon）
+    if command -v mcrcon &>/dev/null; then
+        mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "save-off" "save-all" 2>/dev/null || true
+        sleep 3
+    fi
 
     tar -czf "$backup_file" -C "${MC_DIR}" world 2>/dev/null
 
-    su - minecraft -c "screen -S mc-server -X stuff 'save-on\n'" 2>/dev/null
+    if command -v mcrcon &>/dev/null; then
+        mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "save-on" 2>/dev/null || true
+    fi
 
     if [[ -f "$backup_file" ]]; then
         echo -e "${GREEN}备份成功: ${backup_file}${NC}"
@@ -945,78 +999,88 @@ cmd_backup() {
 }
 
 cmd_update() {
+    if [[ $EUID -ne 0 ]]; then
+        echo -e "${RED}更新需要 root${NC}" >&2
+        return 1
+    fi
     echo -e "${CYAN}更新服务器...${NC}"
-    systemctl stop "$SERVICE"
+    local was_active=false
+    systemctl is-active --quiet "$SERVICE" && was_active=true
+    systemctl stop "$SERVICE" || true
 
-    # 自动检测服务器类型
     local server_type="paper"
     if [[ -f "${MC_DIR}/paper.jar" ]]; then
         server_type="paper"
     elif [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
         server_type="fabric"
-    elif ls "${MC_DIR}"/forge-*.jar &>/dev/null; then
+    elif [[ -x "${MC_DIR}/run.sh" ]] || find "$MC_DIR" -maxdepth 1 -name 'forge-*.jar' -print -quit | grep -q .; then
         server_type="forge"
     elif [[ -f "${MC_DIR}/server.jar" ]]; then
         server_type="vanilla"
     fi
 
-    local current_hash
-    local new_hash
-    local updated=false
+    if [[ "$server_type" == "forge" ]]; then
+        echo -e "${YELLOW}Forge 更新需要运行对应版本安装器，未修改现有文件。${NC}"
+        $was_active && systemctl start "$SERVICE" || true
+        return 1
+    fi
 
+    local jar_file url tmp_file old_hash new_hash
     case "$server_type" in
         paper)
-            local jar_file="${MC_DIR}/paper.jar"
-            current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
-            local paper_version=$(curl -sL "https://api.papermc.io/v2/projects/paper" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); print(d['versions'][-1])" 2>/dev/null)
-            local paper_build=$(curl -sL "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); builds=[b for b in d['builds'] if b['channel']=='default']; print(builds[-1]['build'])" 2>/dev/null)
-            local paper_url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
-            cp "$jar_file" "${jar_file}.bak"
-            curl -sL -o "$jar_file" "$paper_url"
-            new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
-            [[ "$current_hash" != "$new_hash" ]] && updated=true
+            jar_file="${MC_DIR}/paper.jar"
+            local paper_version paper_build
+            paper_version=$(curl -fsSL --max-time 20 "https://api.papermc.io/v2/projects/paper" | python3 -c "import sys,json; print(json.load(sys.stdin)['versions'][-1])") || {
+                $was_active && systemctl start "$SERVICE" || true; return 1;
+            }
+            paper_build=$(curl -fsSL --max-time 20 "https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds" | python3 -c "import sys,json; d=json.load(sys.stdin); print([b for b in d['builds'] if b['channel']=='default'][-1]['build'])") || {
+                $was_active && systemctl start "$SERVICE" || true; return 1;
+            }
+            url="https://api.papermc.io/v2/projects/paper/versions/${paper_version}/builds/${paper_build}/downloads/paper-${paper_version}-${paper_build}.jar"
             ;;
         vanilla)
-            local jar_file="${MC_DIR}/server.jar"
-            current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
-            local version_json_url=$(curl -sL "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); latest=d['latest']['release']; [print(v['url']) for v in d['versions'] if v['id']==latest]" 2>/dev/null)
-            local server_url=$(curl -sL "$version_json_url" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['downloads']['server']['url'])" 2>/dev/null)
-            cp "$jar_file" "${jar_file}.bak"
-            curl -sL -o "$jar_file" "$server_url"
-            new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
-            [[ "$current_hash" != "$new_hash" ]] && updated=true
+            jar_file="${MC_DIR}/server.jar"
+            local version_json_url
+            version_json_url=$(curl -fsSL --max-time 20 "https://launchermeta.mojang.com/mc/game/version_manifest.json" | python3 -c "import sys,json; d=json.load(sys.stdin); latest=d['latest']['release']; print(next(v['url'] for v in d['versions'] if v['id']==latest))") || {
+                $was_active && systemctl start "$SERVICE" || true; return 1;
+            }
+            url=$(curl -fsSL --max-time 20 "$version_json_url" | python3 -c "import sys,json; print(json.load(sys.stdin)['downloads']['server']['url'])") || {
+                $was_active && systemctl start "$SERVICE" || true; return 1;
+            }
             ;;
         fabric)
-            local jar_file="${MC_DIR}/fabric-server.jar"
-            current_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
-            local mc_version=$(curl -sL "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
-                python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null)
-            local fabric_url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/0.16.14/1.0.1/server/jar"
-            cp "$jar_file" "${jar_file}.bak"
-            curl -sL -o "$jar_file" "$fabric_url"
-            new_hash=$(md5sum "$jar_file" 2>/dev/null | awk '{print $1}')
-            [[ "$current_hash" != "$new_hash" ]] && updated=true
-            ;;
-        forge)
-            echo -e "${YELLOW}Forge 更新需要重新安装，请手动操作:${NC}"
-            echo -e "  1. 下载新版安装器: https://files.minecraftforge.net/"
-            echo -e "  2. java -jar forge-installer.jar --installServer ${MC_DIR}"
-            echo -e "  3. 更新 start.sh 中的 jar 文件名"
-            systemctl start "$SERVICE"
-            return
+            jar_file="${MC_DIR}/fabric-server.jar"
+            local mc_version
+            mc_version=$(curl -fsSL --max-time 20 "https://meta.fabricmc.net/v2/versions/game" | python3 -c "import sys,json; print(next(v['version'] for v in json.load(sys.stdin) if v['stable']))") || {
+                $was_active && systemctl start "$SERVICE" || true; return 1;
+            }
+            url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/0.16.14/1.0.1/server/jar"
             ;;
     esac
 
-    systemctl start "$SERVICE"
-
-    if [[ "$updated" == "true" ]]; then
-        echo -e "${GREEN}更新完成${NC}"
-    else
-        echo -e "${GREEN}已是最新版本${NC}"
+    tmp_file="${jar_file}.new"
+    rm -f "$tmp_file"
+    if ! curl -fL --connect-timeout 20 --retry 3 --max-time 300 -o "$tmp_file" "$url" || \
+       [[ $(stat -c%s "$tmp_file" 2>/dev/null || echo 0) -lt 500000 ]]; then
+        rm -f "$tmp_file"
+        echo -e "${RED}下载或文件校验失败，保留原版本${NC}" >&2
+        $was_active && systemctl start "$SERVICE" || true
+        return 1
     fi
+
+    old_hash=$(sha256sum "$jar_file" | awk '{print $1}')
+    new_hash=$(sha256sum "$tmp_file" | awk '{print $1}')
+    if [[ "$old_hash" == "$new_hash" ]]; then
+        rm -f "$tmp_file"
+        echo -e "${GREEN}已是最新版本${NC}"
+    else
+        cp -p "$jar_file" "${jar_file}.bak"
+        chown --reference="$jar_file" "$tmp_file"
+        chmod --reference="$jar_file" "$tmp_file"
+        mv -f "$tmp_file" "$jar_file"
+        echo -e "${GREEN}更新完成；旧版本: ${jar_file}.bak${NC}"
+    fi
+    $was_active && systemctl start "$SERVICE" || true
 }
 
 cmd_config() {
@@ -1067,7 +1131,7 @@ cmd_plugin() {
     local modrinth_api="https://api.modrinth.com/v2"
     # 通过版本清单获取当前 MC 版本
     local mc_version
-    mc_version=$(set +o pipefail; curl -sL --max-time 10 "${modrinth_api}/search?query=placeholder&limit=1" 2>/dev/null | \
+    mc_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 10 "${modrinth_api}/search?query=placeholder&limit=1" 2>/dev/null | \
         python3 -c "import sys,json; print(json.load(sys.stdin)['hits'][0]['versions'][-1])" 2>/dev/null || echo "")
 
     case "$subcmd" in
@@ -1079,7 +1143,7 @@ cmd_plugin() {
             fi
             echo -e "${CYAN}搜索插件: ${query}${NC}"
             local result
-            result=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=10" 2>/dev/null || true)
+            result=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=10" 2>/dev/null || true)
             if [[ -z "$result" ]]; then
                 echo -e "${YELLOW}无法连接 Modrinth API，请检查网络${NC}"
                 return 1
@@ -1118,21 +1182,21 @@ else:
 
             echo -e "${CYAN}搜索插件: ${query}${NC}"
             local result
-            result=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=5" 2>/dev/null || true)
+            result=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=5" 2>/dev/null || true)
 
             if [[ -z "$result" ]]; then
                 echo -e "${YELLOW}无法连接 Modrinth API，尝试直接下载...${NC}"
                 # 尝试用 slug 直接获取
                 local project_id="$query"
                 local versions_json
-                versions_json=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
+                versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
                 if [[ -n "$versions_json" ]]; then
                     local dl_url filename
                     dl_url=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['url'])" 2>/dev/null || true)
                     filename=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['filename'])" 2>/dev/null || true)
                     if [[ -n "$dl_url" ]]; then
                         echo "下载: ${filename}"
-                        curl -sL --max-time 120 -o "${plugins_dir}/${filename}" "$dl_url"
+                        curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 120 -o "${plugins_dir}/${filename}" "$dl_url"
                         echo -e "${GREEN}安装成功: ${filename}${NC}"
                         echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
                         return 0
@@ -1156,7 +1220,7 @@ else:
 
             # 获取版本信息
             local versions_json
-            versions_json=$(set +o pipefail; curl -sL --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
+            versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
 
             local dl_url filename
             dl_url=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['url'])" 2>/dev/null || true)
@@ -1174,7 +1238,7 @@ else:
             fi
 
             echo "下载: ${filename}..."
-            if curl -sL --max-time 120 -o "${plugins_dir}/${filename}" "$dl_url" && [[ $(stat -c%s "${plugins_dir}/${filename}" 2>/dev/null || echo 0) -gt 10000 ]]; then
+            if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 120 -o "${plugins_dir}/${filename}" "$dl_url" && [[ $(stat -c%s "${plugins_dir}/${filename}" 2>/dev/null || echo 0) -gt 10000 ]]; then
                 echo -e "${GREEN}安装成功: ${filename}${NC}"
                 echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
             else
@@ -1251,7 +1315,7 @@ cmd_datapack() {
             if [[ "$source" =~ ^https?:// ]]; then
                 filename=$(basename "$source" | sed 's/?.*//')
                 echo "下载数据包: ${filename}..."
-                if curl -sL --max-time 120 -o "${datapacks_dir}/${filename}" "$source" && \
+                if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 120 -o "${datapacks_dir}/${filename}" "$source" && \
                    [[ $(stat -c%s "${datapacks_dir}/${filename}" 2>/dev/null || echo 0) -gt 100 ]]; then
                     echo -e "${GREEN}安装成功: ${filename}${NC}"
                 else
@@ -1441,10 +1505,10 @@ case "${1:-help}" in
 esac
 MANAGEREOF
 
-    # 替换 RCON 密码
-    sed -i "s/RCON_PASS_PLACEHOLDER/${MC_RCON_PASSWORD}/g" "${MANAGER_SCRIPT}"
-    chmod +x "${MANAGER_SCRIPT}"
-    info "管理脚本: ${MANAGER_SCRIPT}"
+    # 管理脚本含 RCON 密码，仅 root 可读执行。
+    chown root:root "${MANAGER_SCRIPT}"
+    chmod 700 "${MANAGER_SCRIPT}"
+    info "管理脚本: ${MANAGER_SCRIPT} (root:root 700)"
 }
 
 # ==================== 创建自动备份 ====================
@@ -1458,7 +1522,7 @@ Description=Minecraft Server Backup
 [Service]
 Type=oneshot
 ExecStart=${MANAGER_SCRIPT} backup
-User=${MC_USER}
+User=root
 EOF
 
     cat > "/etc/systemd/system/${SERVICE_NAME}-backup.timer" << EOF
@@ -1486,13 +1550,14 @@ setup_firewall() {
 
     if command -v ufw &>/dev/null; then
         ufw allow "${MC_PORT}/tcp" comment "Minecraft Server"
-        ufw allow "${MC_RCON_PORT}/tcp" comment "Minecraft RCON"
-        info "已开放 TCP ${MC_PORT}(游戏) / TCP ${MC_RCON_PORT}(RCON)"
+        info "已添加游戏端口规则；RCON ${MC_RCON_PORT}/tcp 默认不向公网开放"
+        if ! ufw status 2>/dev/null | grep -qi "Status: active"; then
+            warn "UFW 规则已添加，但 UFW 当前未启用"
+        fi
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port="${MC_PORT}/tcp"
-        firewall-cmd --permanent --add-port="${MC_RCON_PORT}/tcp"
         firewall-cmd --reload
-        info "已开放端口 (firewalld)"
+        info "已开放游戏端口；RCON ${MC_RCON_PORT}/tcp 默认不向公网开放"
     else
         warn "请手动开放端口: TCP ${MC_PORT}"
     fi
@@ -1564,8 +1629,8 @@ show_result() {
     echo -e "  ┌──────────────┬──────────┬────────────────────────────┐"
     echo -e "  │    端口      │   协议   │         用途               │"
     echo -e "  ├──────────────┼──────────┼────────────────────────────┤"
-    echo -e "  │    25565     │   TCP    │  游戏主端口 (必须)         │"
-    echo -e "  │    25575     │   TCP    │  RCON 远程管理 (可选)      │"
+    echo -e "  │    ${MC_PORT}     │   TCP    │  游戏主端口 (必须)         │"
+    echo -e "  │    ${MC_RCON_PORT}     │   TCP    │  RCON（仅本机/SSH隧道）      │"
     echo -e "  └──────────────┴──────────┴────────────────────────────┘"
     echo ""
     echo -e "  ${CYAN}配置方式:${NC}"
@@ -1591,6 +1656,14 @@ main() {
     check_system
     check_resources
     user_config
+    mkdir -p "$(dirname "$CREDENTIALS_FILE")"
+    umask 077
+    {
+        printf 'MC_RCON_PORT=%q\n' "$MC_RCON_PORT"
+        printf 'MC_RCON_PASSWORD=%q\n' "$MC_RCON_PASSWORD"
+    } > "$CREDENTIALS_FILE"
+    chown root:root "$CREDENTIALS_FILE"
+    chmod 600 "$CREDENTIALS_FILE"
 
     echo -e "\n${CYAN}${BOLD}即将执行部署步骤:${NC}"
     echo "  [1] 安装依赖"
@@ -1607,10 +1680,12 @@ main() {
     echo "  [12] 启动服务器"
     echo ""
     echo ""
-    read -rp "回车开始部署 / 输入 n 取消: " confirm
-    if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-        echo "已取消"
-        exit 0
+    if [[ "$NONINTERACTIVE" != "1" ]]; then
+        read -rp "回车开始部署 / 输入 n 取消: " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+            echo "已取消"
+            exit 0
+        fi
     fi
 
     install_deps

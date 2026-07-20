@@ -1,8 +1,6 @@
-node_modules/
-web/node_modules/
-/gsm-panel
-gsm-panel.exe
 .claude/
 *.log
-*.tsbuildinfo
-dist/
+*.bak
+*~
+.DS_Store
+*.swp

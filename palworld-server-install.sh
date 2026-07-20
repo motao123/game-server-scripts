@@ -8,6 +8,7 @@
 #============================================================
 
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 # ==================== 颜色定义 ====================
 RED='\033[0;31m'
@@ -25,6 +26,7 @@ PAL_SETTINGS_FILE="${PAL_CONFIG_DIR}/PalWorldSettings.ini"
 PAL_SAVE_DIR="${PAL_SERVER_DIR}/Pal/Saved"
 SERVICE_NAME="pal-server"
 MANAGER_SCRIPT="/usr/local/bin/pal-manager"
+CREDENTIALS_FILE="/etc/palworld/credentials.env"
 
 # SteamCMD / 离线包下载配置
 STEAMCMD_URL="${STEAMCMD_URL:-https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz}"
@@ -33,17 +35,18 @@ PALSERVER_ARCHIVE_URL="${PALSERVER_ARCHIVE_URL:-}"
 PALSERVER_ARCHIVE_SHA256="${PALSERVER_ARCHIVE_SHA256:-}"
 
 # 端口配置
-DEFAULT_PORT=8211
-QUERY_PORT=27015
-RCON_PORT=25575
-REST_API_PORT=8212          # v1.0 REST API，仅本地访问（官方建议不暴露公网）
+DEFAULT_PORT="${DEFAULT_PORT:-8211}"
+QUERY_PORT="${QUERY_PORT:-27015}"
+RCON_PORT="${RCON_PORT:-25575}"
+REST_API_PORT="${REST_API_PORT:-8212}"  # v1.0 REST API，仅本地访问（官方建议不暴露公网）
 
 # 性能配置
-SWAP_SIZE="16G"
-MAX_PLAYERS=32
-SERVER_NAME="Palworld Server"
-SERVER_PASSWORD=""
-ADMIN_PASSWORD="admin123"
+SWAP_SIZE="${SWAP_SIZE:-16G}"
+MAX_PLAYERS="${MAX_PLAYERS:-32}"
+SERVER_NAME="${SERVER_NAME:-Palworld Server}"
+SERVER_PASSWORD="${SERVER_PASSWORD:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 # 内存限制 (systemd cgroup, 防止内存泄漏拖垮系统)
 # 由 compute_memory_limits() 根据系统内存动态计算
@@ -55,6 +58,25 @@ info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 step()  { echo -e "\n${CYAN}${BOLD}========== $1 ==========${NC}\n"; }
+
+generate_password() {
+    local password
+    password=$(set +o pipefail; head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 20)
+    printf '%s' "${password:-pal$(date +%s)}"
+}
+
+write_credentials_file() {
+    mkdir -p "$(dirname "$CREDENTIALS_FILE")"
+    umask 077
+    {
+        printf 'RCON_PORT=%q\n' "$RCON_PORT"
+        printf 'REST_API_PORT=%q\n' "$REST_API_PORT"
+        printf 'ADMIN_PASSWORD=%q\n' "$ADMIN_PASSWORD"
+    } > "$CREDENTIALS_FILE"
+    chown root:"${STEAM_USER}" "$CREDENTIALS_FILE"
+    chmod 640 "$CREDENTIALS_FILE"
+    info "管理员凭证已保存到 ${CREDENTIALS_FILE} (root:${STEAM_USER} 640)"
+}
 
 # ==================== 系统检查 ====================
 check_root() {
@@ -114,12 +136,11 @@ compute_memory_limits() {
     local mem_total
     mem_total=$(awk '/MemTotal/ {printf "%.0f", $2/1024/1024}' /proc/meminfo)
 
-    # 给系统留 2G，下限 8G
+    # 给系统至少留 2G；低内存机器不设置超过物理内存的限制
     local mem_max=$((mem_total - 2))
-    [[ $mem_max -lt 8 ]] && mem_max=8
-    # High = max - 2，下限 6G（提前软限，避免硬限触发 OOM）
+    [[ $mem_max -lt 2 ]] && mem_max=2
     local mem_high=$((mem_max - 2))
-    [[ $mem_high -lt 6 ]] && mem_high=6
+    [[ $mem_high -lt 1 ]] && mem_high=1
 
     MEMORY_MAX="${mem_max}G"
     MEMORY_HIGH="${mem_high}G"
@@ -129,43 +150,58 @@ compute_memory_limits() {
 # ==================== 用户交互配置 ====================
 user_config() {
 
-    echo -e "  ${CYAN}当前默认配置:${NC}"
-    echo -e "  ┌─────────────────────────────────────────────┐"
-    echo -e "  │  1) 服务器名称:  ${SERVER_NAME}"
-    echo -e "  │  2) 服务器密码:  (无密码)"
-    echo -e "  │  3) 管理员密码:  ${ADMIN_PASSWORD}"
-    echo -e "  │  4) 最大玩家数:  ${MAX_PLAYERS}"
-    echo -e "  │  5) 游戏端口:    ${DEFAULT_PORT}"
-    echo -e "  │  6) RCON端口:    ${RCON_PORT}"
-    echo -e "  │  7) REST API端口: ${REST_API_PORT} (仅本地)"
-    echo -e "  └─────────────────────────────────────────────┘"
-    echo ""
-    echo -e "  直接回车使用以上默认值，或输入 ${YELLOW}c${NC} 自定义配置"
-    echo ""
-    read -rp "  请选择 [直接回车=使用默认 / c=自定义]: " choice
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        ADMIN_PASSWORD=$(generate_password)
+        info "已自动生成强管理员密码"
+    fi
 
-    if [[ "$choice" == "c" || "$choice" == "C" ]]; then
+    if [[ "$NONINTERACTIVE" == "1" ]]; then
+        info "非交互模式：使用环境变量与默认配置"
+    else
+        echo -e "  ${CYAN}当前默认配置:${NC}"
+        echo -e "  ┌─────────────────────────────────────────────┐"
+        echo -e "  │  1) 服务器名称:  ${SERVER_NAME}"
+        echo -e "  │  2) 服务器密码:  $([[ -n "$SERVER_PASSWORD" ]] && echo 已设置 || echo 无密码)"
+        echo -e "  │  3) 管理员密码:  (已设置，安装结束显示)"
+        echo -e "  │  4) 最大玩家数:  ${MAX_PLAYERS}"
+        echo -e "  │  5) 游戏端口:    ${DEFAULT_PORT}"
+        echo -e "  │  6) RCON端口:    ${RCON_PORT}"
+        echo -e "  │  7) REST API端口: ${REST_API_PORT} (仅本地)"
+        echo -e "  └─────────────────────────────────────────────┘"
         echo ""
-        read -rp "  服务器名称 [${SERVER_NAME}]: " input
-        SERVER_NAME="${input:-$SERVER_NAME}"
+        echo -e "  直接回车使用以上默认值，或输入 ${YELLOW}c${NC} 自定义配置"
+        echo ""
+        read -rp "  请选择 [直接回车=使用默认 / c=自定义]: " choice
 
-        read -rp "  服务器密码 (留空为无密码): " input
-        SERVER_PASSWORD="${input:-$SERVER_PASSWORD}"
+        if [[ "$choice" == "c" || "$choice" == "C" ]]; then
+            echo ""
+            read -rp "  服务器名称 [${SERVER_NAME}]: " input
+            SERVER_NAME="${input:-$SERVER_NAME}"
 
-        read -rp "  管理员密码 [${ADMIN_PASSWORD}]: " input
-        ADMIN_PASSWORD="${input:-$ADMIN_PASSWORD}"
+            read -rp "  服务器密码 (留空为无密码): " input
+            SERVER_PASSWORD="${input:-$SERVER_PASSWORD}"
 
-        read -rp "  最大玩家数 [${MAX_PLAYERS}]: " input
-        MAX_PLAYERS="${input:-$MAX_PLAYERS}"
+            read -rsp "  管理员密码 (至少12位，回车保留自动密码): " input
+            echo ""
+            ADMIN_PASSWORD="${input:-$ADMIN_PASSWORD}"
 
-        read -rp "  游戏端口 [${DEFAULT_PORT}]: " input
-        DEFAULT_PORT="${input:-$DEFAULT_PORT}"
+            read -rp "  最大玩家数 [${MAX_PLAYERS}]: " input
+            MAX_PLAYERS="${input:-$MAX_PLAYERS}"
 
-        read -rp "  RCON端口 [${RCON_PORT}]: " input
-        RCON_PORT="${input:-$RCON_PORT}"
+            read -rp "  游戏端口 [${DEFAULT_PORT}]: " input
+            DEFAULT_PORT="${input:-$DEFAULT_PORT}"
 
-        read -rp "  REST API端口(仅本地) [${REST_API_PORT}]: " input
-        REST_API_PORT="${input:-$REST_API_PORT}"
+            read -rp "  RCON端口 [${RCON_PORT}]: " input
+            RCON_PORT="${input:-$RCON_PORT}"
+
+            read -rp "  REST API端口(仅本地) [${REST_API_PORT}]: " input
+            REST_API_PORT="${input:-$REST_API_PORT}"
+        fi
+    fi
+
+    if [[ ${#ADMIN_PASSWORD} -lt 12 ]]; then
+        error "管理员密码至少需要 12 个字符"
+        exit 1
     fi
 
     echo ""
@@ -249,20 +285,6 @@ optimize_kernel() {
         fi
     done
 
-    # 用户文件描述符限制
-    if ! grep -q "soft nofile" /etc/security/limits.conf 2>/dev/null; then
-        cat >> /etc/security/limits.conf << 'EOF'
-
-# Palworld server optimization
-* soft nofile 1048576
-* hard nofile 1048576
-root soft nofile 1048576
-root hard nofile 1048576
-EOF
-        sysctl_changed=true
-        info "文件描述符限制已设置"
-    fi
-
     if $sysctl_changed; then
         sysctl -p >/dev/null 2>&1
         info "内核参数优化完成"
@@ -281,8 +303,21 @@ setup_swap() {
         return
     fi
 
-    info "创建 ${SWAP_SIZE} Swap 文件..."
-    fallocate -l "${SWAP_SIZE}" /swapfile
+    local requested_gb available_gb swap_gb
+    requested_gb="${SWAP_SIZE%G}"
+    available_gb=$(df -BG / | awk 'NR==2 {gsub(/G/, "", $4); print $4}')
+    swap_gb=$requested_gb
+    # 始终为根文件系统保留至少 8G。
+    if (( swap_gb > available_gb - 8 )); then
+        swap_gb=$((available_gb - 8))
+    fi
+    if (( swap_gb < 1 )); then
+        warn "磁盘空间不足，跳过 Swap 创建（可用 ${available_gb}GB）"
+        return
+    fi
+
+    info "创建 ${swap_gb}G Swap 文件（磁盘可用 ${available_gb}GB）..."
+    fallocate -l "${swap_gb}G" /swapfile
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
@@ -370,13 +405,7 @@ create_steam_user() {
         info "用户 $STEAM_USER 创建完成"
     fi
 
-    # 赋予 sudo 权限
-    local sudoers_line="${STEAM_USER}   ALL=(ALL:ALL) ALL"
-    if ! grep -qF "$sudoers_line" /etc/sudoers 2>/dev/null; then
-        echo "$sudoers_line" >> /etc/sudoers
-        info "已赋予 $STEAM_USER 用户 sudo 权限"
-    fi
-
+    # 游戏进程用户不得拥有 sudo 权限。
     # 设置用户资源限制
     local limits_file="/etc/security/limits.d/${STEAM_USER}.conf"
     cat > "$limits_file" << EOF
@@ -494,18 +523,20 @@ configure_server() {
     chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
 
     # 用官方默认配置作为基础（单行格式，含全部配置项）
-    # 关键：Palworld v1.0 启动时会重写 PalWorldSettings.ini，但重写过程会破坏
-    # 多行/带注释的格式（去引号/去逗号/去结束括号），导致配置解析失败、
-    # RCON 等功能不生效。必须用官方单行格式 + chmod 444 只读阻止重写。
+    # 写入后校验关键配置，避免上游格式变化导致静默失败。
     local default_config="${PAL_SERVER_DIR}/DefaultPalWorldSettings.ini"
     if [[ -f "$default_config" ]]; then
         cp "$default_config" "${PAL_SETTINGS_FILE}"
-        # sed 修改关键项（单行配置，sed 能正确处理）
+        # sed 修改关键项；用户输入先转义 sed replacement 元字符
+        local escaped_server_name escaped_admin_password escaped_server_password
+        escaped_server_name=$(printf '%s' "$SERVER_NAME" | sed 's/[&|\\]/\\&/g')
+        escaped_admin_password=$(printf '%s' "$ADMIN_PASSWORD" | sed 's/[&|\\]/\\&/g')
+        escaped_server_password=$(printf '%s' "$SERVER_PASSWORD" | sed 's/[&|\\]/\\&/g')
         sed -i \
-            -e "s/ServerName=\"[^\"]*\"/ServerName=\"${SERVER_NAME}\"/" \
-            -e "s/ServerDescription=\"[^\"]*\"/ServerDescription=\"Powered by Palworld Auto Installer\"/" \
-            -e "s/AdminPassword=\"[^\"]*\"/AdminPassword=\"${ADMIN_PASSWORD}\"/" \
-            -e "s|ServerPassword=\"[^\"]*\"|ServerPassword=\"${SERVER_PASSWORD}\"|" \
+            -e "s|ServerName=\"[^\"]*\"|ServerName=\"${escaped_server_name}\"|" \
+            -e "s|ServerDescription=\"[^\"]*\"|ServerDescription=\"Powered by Palworld Auto Installer\"|" \
+            -e "s|AdminPassword=\"[^\"]*\"|AdminPassword=\"${escaped_admin_password}\"|" \
+            -e "s|ServerPassword=\"[^\"]*\"|ServerPassword=\"${escaped_server_password}\"|" \
             -e "s/ServerPlayerMaxNum=[0-9]*/ServerPlayerMaxNum=${MAX_PLAYERS}/" \
             -e "s/PublicPort=[0-9]*/PublicPort=${DEFAULT_PORT}/" \
             -e "s/RCONEnabled=[A-Za-z]*/RCONEnabled=True/" \
@@ -516,36 +547,47 @@ configure_server() {
         info "已从默认配置创建 PalWorldSettings.ini（单行格式 + sed 修改关键项）"
     fi
 
-    # 如果配置文件不存在，先启动一次服务器生成默认配置
+    local first_start_pid=""
     if [[ ! -f "${PAL_SETTINGS_FILE}" ]]; then
         info "首次启动以生成默认配置文件..."
         cd "${PAL_SERVER_DIR}"
-        sudo -u "$STEAM_USER" timeout 90 ./PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS || true
+        sudo -u "$STEAM_USER" ./PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS &
+        first_start_pid=$!
 
         local wait_count=0
         while [[ ! -f "${PAL_SETTINGS_FILE}" ]] && [[ $wait_count -lt 45 ]]; do
             sleep 2
             wait_count=$((wait_count + 1))
+            kill -0 "$first_start_pid" 2>/dev/null || break
         done
 
-        pkill -f PalServer-Linux 2>/dev/null || true
-        pkill -f PalServer 2>/dev/null || true
+        kill -SIGINT "$first_start_pid" 2>/dev/null || true
         sleep 5
+        kill -KILL "$first_start_pid" 2>/dev/null || true
     fi
 
     if [[ -f "${PAL_SETTINGS_FILE}" ]]; then
-        # chown + chmod 444 只读（关键：阻止 Palworld 启动时重写配置破坏格式）
+        for expected in \
+            "AdminPassword=\"${ADMIN_PASSWORD}\"" \
+            "RCONEnabled=True" \
+            "RCONPort=${RCON_PORT}" \
+            "RESTAPIEnabled=True" \
+            "RESTAPIPort=${REST_API_PORT}"; do
+            if ! grep -qF "$expected" "${PAL_SETTINGS_FILE}"; then
+                error "配置写入校验失败: ${expected%%=*}"
+                exit 1
+            fi
+        done
         chown "${STEAM_USER}:${STEAM_USER}" "${PAL_SETTINGS_FILE}"
-        chmod 444 "${PAL_SETTINGS_FILE}"
-        info "PalWorldSettings.ini 已设为只读 (444)，防止 Palworld 重写破坏格式"
+        chmod 640 "${PAL_SETTINGS_FILE}"
+        info "PalWorldSettings.ini 已校验并设为 640"
         info "配置文件路径: ${PAL_SETTINGS_FILE}"
     else
-        warn "配置文件未生成，请检查服务器是否完整"
+        error "配置文件未生成，请检查服务器是否完整"
+        exit 1
     fi
 
-    # 存档目录 chown（配置文件已上面单独 chown + chmod 444）
-    chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
-    chmod 444 "${PAL_SETTINGS_FILE}" 2>/dev/null || true
+    chmod 640 "${PAL_SETTINGS_FILE}"
     info "存档与配置目录属主已修正为 ${STEAM_USER}"
 }
 
@@ -646,8 +688,10 @@ create_graceful_restart_script() {
 # 幻兽帕鲁服务器优雅重启: 广播预警 -> 等待 -> RCON Save -> systemctl restart
 set -e
 
-RCON_PORT=${RCON_PORT}
-RCON_PASS='${ADMIN_PASSWORD}'
+CREDENTIALS_FILE="/etc/palworld/credentials.env"
+source "\$CREDENTIALS_FILE"
+RCON_PORT="\${RCON_PORT}"
+RCON_PASS="\${ADMIN_PASSWORD}"
 
 echo "[\$(date)] 开始优雅重启流程..."
 
@@ -720,8 +764,10 @@ create_backup_script() {
 
 BACKUP_DIR="${backup_dir}"
 SAVE_DIR="${PAL_SAVE_DIR}"
-RCON_PORT=${RCON_PORT}
-RCON_PASS='${ADMIN_PASSWORD}'
+CREDENTIALS_FILE="/etc/palworld/credentials.env"
+source "\$CREDENTIALS_FILE"
+RCON_PORT="\${RCON_PORT}"
+RCON_PASS="\${ADMIN_PASSWORD}"
 TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
 BACKUP_FILE="\${BACKUP_DIR}/pal_backup_\${TIMESTAMP}.tar.gz"
 
@@ -902,8 +948,10 @@ install_stop_script() {
 #!/bin/bash
 # Palworld 优雅停止: RCON Save 落盘 -> 等待 -> SIGINT
 # 由 systemd ExecStop 调用，\$1 = \$MAINPID
-RCON_PORT=${RCON_PORT}
-RCON_PASS='${ADMIN_PASSWORD}'
+CREDENTIALS_FILE="/etc/palworld/credentials.env"
+source "\$CREDENTIALS_FILE"
+RCON_PORT="\${RCON_PORT}"
+RCON_PASS="\${ADMIN_PASSWORD}"
 PID="\$1"
 
 # RCON Save（服务器可能未启动或 RCON 不可用，忽略错误）
@@ -914,8 +962,8 @@ sleep 3
 kill -SIGINT "\$PID" 2>/dev/null || true
 STOPEOF
 
-    chmod 755 /usr/local/bin/pal-stop
-    chown root:root /usr/local/bin/pal-stop
+    chmod 750 /usr/local/bin/pal-stop
+    chown root:"${STEAM_USER}" /usr/local/bin/pal-stop
     info "优雅停止脚本已安装: /usr/local/bin/pal-stop (ExecStop 自动 Save)"
 }
 
@@ -933,8 +981,10 @@ PAL_SERVER_DIR="PAL_SERVER_DIR_PLACEHOLDER"
 DEFAULT_PORT=DEFAULT_PORT_PLACEHOLDER
 RCON_PORT=RCON_PORT_PLACEHOLDER
 REST_API_PORT=REST_API_PORT_PLACEHOLDER
-ADMIN_PASS="ADMIN_PASSWORD_PLACEHOLDER"
 STEAMCMD_PROXY="${STEAMCMD_PROXY:-}"
+CREDENTIALS_FILE="/etc/palworld/credentials.env"
+source "$CREDENTIALS_FILE"
+ADMIN_PASS="$ADMIN_PASSWORD"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -1144,10 +1194,10 @@ MANAGEREOF
         -e "s/DEFAULT_PORT_PLACEHOLDER/${DEFAULT_PORT}/g" \
         -e "s/RCON_PORT_PLACEHOLDER/${RCON_PORT}/g" \
         -e "s/REST_API_PORT_PLACEHOLDER/${REST_API_PORT}/g" \
-        -e "s/ADMIN_PASSWORD_PLACEHOLDER/${ADMIN_PASSWORD}/g" \
         "${MANAGER_SCRIPT}"
-    chmod +x "${MANAGER_SCRIPT}"
-    info "管理脚本已创建: ${MANAGER_SCRIPT}"
+    chown root:root "${MANAGER_SCRIPT}"
+    chmod 700 "${MANAGER_SCRIPT}"
+    info "管理脚本已创建: ${MANAGER_SCRIPT} (root:root 700)"
 }
 
 # ==================== 配置防火墙 ====================
@@ -1156,19 +1206,20 @@ setup_firewall() {
     if command -v ufw &>/dev/null; then
         ufw allow "${DEFAULT_PORT}/udp"  comment "Palworld Game Port"
         ufw allow "${QUERY_PORT}/udp"   comment "Palworld Query Port"
-        ufw allow "${RCON_PORT}/tcp"    comment "Palworld RCON"
-        info "已开放 UDP ${DEFAULT_PORT}(游戏) / UDP ${QUERY_PORT}(查询) / TCP ${RCON_PORT}(RCON)"
+        info "已添加游戏端口规则；RCON ${RCON_PORT}/tcp 默认不向公网开放"
+        if ! ufw status 2>/dev/null | grep -qi "Status: active"; then
+            warn "UFW 规则已添加，但 UFW 当前未启用"
+        fi
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port="${DEFAULT_PORT}/udp"
         firewall-cmd --permanent --add-port="${QUERY_PORT}/udp"
-        firewall-cmd --permanent --add-port="${RCON_PORT}/tcp"
         firewall-cmd --reload
-        info "已开放端口 (firewalld)"
+        info "已开放游戏端口；RCON ${RCON_PORT}/tcp 默认不向公网开放"
     else
         warn "未检测到防火墙工具 (ufw/firewalld)，请手动确认以下端口已开放:"
         warn "  UDP ${DEFAULT_PORT} (游戏)"
         warn "  UDP ${QUERY_PORT} (查询)"
-        warn "  TCP ${RCON_PORT} (RCON)"
+        warn "RCON TCP ${RCON_PORT} 请仅通过本机或 SSH 隧道使用"
     fi
 }
 
@@ -1260,12 +1311,11 @@ show_result() {
     echo -e "  ├──────────────┼──────────┼────────────────────────────┤"
     echo -e "  │    ${DEFAULT_PORT}      │   UDP    │  游戏主端口 (必须)         │"
     echo -e "  │    ${QUERY_PORT}     │   UDP    │  查询端口 (必须)           │"
-    echo -e "  │    ${RCON_PORT}     │   TCP    │  RCON 远程管理 (可选)      │"
+    echo -e "  │    ${RCON_PORT}     │   TCP    │  RCON（仅本机/SSH隧道）      │"
     echo -e "  └──────────────┴──────────┴────────────────────────────┘"
     echo ""
-    echo -e "  ${CYAN}REST API 端口 ${REST_API_PORT} 仅本地监听，未开放防火墙。${NC}"
-    echo -e "  官方文档明确不建议 REST API 暴露公网。本地调用示例:"
-    echo -e "    curl -u admin:${ADMIN_PASSWORD} http://127.0.0.1:${REST_API_PORT}/info"
+    echo -e "  ${CYAN}RCON ${RCON_PORT} 与 REST API ${REST_API_PORT} 均不开放公网。${NC}"
+    echo -e "  凭证文件: ${CREDENTIALS_FILE} (root:${STEAM_USER} 640)"
     echo ""
     echo -e "  ${CYAN}配置方式:${NC}"
     echo -e "    腾讯云:  控制台 → 云服务器 → 安全组 → 添加入站规则"
@@ -1320,10 +1370,12 @@ main() {
     echo -e "  [17] 启动服务器"
     echo ""
     echo ""
-    read -rp "回车开始部署 / 输入 n 取消: " confirm
-    if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
-        echo "已取消部署"
-        exit 0
+    if [[ "$NONINTERACTIVE" != "1" ]]; then
+        read -rp "回车开始部署 / 输入 n 取消: " confirm
+        if [[ "$confirm" == "n" || "$confirm" == "N" ]]; then
+            echo "已取消部署"
+            exit 0
+        fi
     fi
 
     local total_steps=17
@@ -1346,6 +1398,7 @@ main() {
 
     run_step "创建 steam 用户"
     create_steam_user
+    write_credentials_file
 
     run_step "下载帕鲁服务器"
     download_palserver
