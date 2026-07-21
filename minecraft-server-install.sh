@@ -22,6 +22,17 @@ MC_DIR="/opt/minecraft"
 MC_WORLD_DIR="${MC_DIR}/world"
 SERVICE_NAME="mc-server"
 MANAGER_SCRIPT="/usr/local/bin/mc-manager"
+STATE_FILE="${MC_DIR}/.install-state"
+FORCE_CONFIG_REWRITE="${FORCE_CONFIG_REWRITE:-0}"
+
+# 记录调用者是否显式覆盖；重复安装默认沿用精确安装状态。
+SERVER_TYPE_WAS_SET="${SERVER_TYPE+x}"
+MC_VERSION_WAS_SET="${MC_VERSION+x}"
+MC_PORT_WAS_SET="${MC_PORT+x}"
+MC_LEVEL_NAME_WAS_SET="${MC_LEVEL_NAME+x}"
+MC_ENABLE_RCON_WAS_SET="${MC_ENABLE_RCON+x}"
+MC_RCON_PORT_WAS_SET="${MC_RCON_PORT+x}"
+MC_RCON_PASSWORD_WAS_SET="${MC_RCON_PASSWORD+x}"
 
 # 服务器类型: paper / vanilla / fabric / forge
 SERVER_TYPE="${SERVER_TYPE:-paper}"
@@ -47,6 +58,7 @@ MC_ONLINE_MODE="${MC_ONLINE_MODE:-true}"
 MC_PVP="${MC_PVP:-true}"
 MC_SEED="${MC_SEED:-}"
 MC_LEVEL_NAME="${MC_LEVEL_NAME:-world}"
+MC_WORLD_DIR="${MC_DIR}/${MC_LEVEL_NAME}"
 MC_ENABLE_RCON="${MC_ENABLE_RCON:-false}"
 MC_RCON_PORT="${MC_RCON_PORT:-25575}"
 MC_RCON_PASSWORD="${MC_RCON_PASSWORD:-}"
@@ -129,6 +141,44 @@ check_resources() {
     if [[ $mem_total -lt 4 ]]; then
         warn "内存不足 4GB，已自动调整 JVM 内存为 ${MC_MEMORY}，建议升级到 4GB+"
     fi
+}
+
+# ==================== 持久安装状态 ====================
+load_install_state() {
+    [[ -f "$STATE_FILE" ]] || return 0
+    # 文件由本安装器以 root:root 0600 创建，内容均用 printf %q 转义。
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
+    [[ -n "$SERVER_TYPE_WAS_SET" ]] || SERVER_TYPE="${INSTALLED_SERVER_TYPE:-$SERVER_TYPE}"
+    [[ -n "$MC_VERSION_WAS_SET" ]] || MC_VERSION="${INSTALLED_MC_VERSION:-$MC_VERSION}"
+    [[ -n "$MC_PORT_WAS_SET" ]] || MC_PORT="${INSTALLED_MC_PORT:-$MC_PORT}"
+    [[ -n "$MC_LEVEL_NAME_WAS_SET" ]] || MC_LEVEL_NAME="${INSTALLED_LEVEL_NAME:-$MC_LEVEL_NAME}"
+    MC_WORLD_DIR="${MC_DIR}/${MC_LEVEL_NAME}"
+    if [[ -f "$CREDENTIALS_FILE" ]]; then
+        local requested_rcon="$MC_ENABLE_RCON" requested_port="$MC_RCON_PORT" requested_password="$MC_RCON_PASSWORD"
+        # shellcheck disable=SC1090
+        source "$CREDENTIALS_FILE"
+        [[ -n "$MC_ENABLE_RCON_WAS_SET" ]] && MC_ENABLE_RCON="$requested_rcon"
+        [[ -n "$MC_RCON_PORT_WAS_SET" ]] && MC_RCON_PORT="$requested_port"
+        [[ -n "$MC_RCON_PASSWORD_WAS_SET" ]] && MC_RCON_PASSWORD="$requested_password"
+    fi
+    info "沿用现有安装状态: ${SERVER_TYPE} ${MC_VERSION:-未知}, 世界 ${MC_WORLD_DIR}"
+}
+
+save_install_state() {
+    umask 077
+    {
+        printf 'INSTALLED_SERVER_TYPE=%q\n' "$SERVER_TYPE"
+        printf 'INSTALLED_MC_VERSION=%q\n' "$MC_VERSION"
+        printf 'INSTALLED_BUILD=%q\n' "${RESOLVED_BUILD:-}"
+        printf 'INSTALLED_LOADER_VERSION=%q\n' "${RESOLVED_LOADER_VERSION:-}"
+        printf 'INSTALLED_INSTALLER_VERSION=%q\n' "${RESOLVED_INSTALLER_VERSION:-}"
+        printf 'INSTALLED_MC_PORT=%q\n' "$MC_PORT"
+        printf 'INSTALLED_LEVEL_NAME=%q\n' "$MC_LEVEL_NAME"
+        printf 'INSTALLED_WORLD_DIR=%q\n' "$MC_WORLD_DIR"
+    } > "$STATE_FILE"
+    chown root:root "$STATE_FILE"
+    chmod 600 "$STATE_FILE"
 }
 
 # ==================== 用户配置 ====================
@@ -250,7 +300,43 @@ user_config() {
 install_deps() {
     info "安装依赖..."
     apt-get update -y
-    apt-get install -y curl wget jq
+    apt-get install -y curl wget jq python3 sudo nano ca-certificates unzip zip tar util-linux
+    if ! apt-get install -y mcrcon; then
+        warn "系统仓库无 mcrcon；安装内置 Python RCON 客户端（仅由管理器连接 127.0.0.1）"
+        cat > /usr/local/bin/mcrcon <<'PYRCON'
+#!/usr/bin/env python3
+import argparse, socket, struct, sys
+
+def packet(sock, request_id, kind, text):
+    body = struct.pack('<ii', request_id, kind) + text.encode() + b'\0\0'
+    sock.sendall(struct.pack('<i', len(body)) + body)
+
+def receive(sock):
+    size = struct.unpack('<i', sock.recv(4))[0]
+    data = b''
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk: raise RuntimeError('RCON connection closed')
+        data += chunk
+    request_id, kind = struct.unpack('<ii', data[:8])
+    return request_id, kind, data[8:-2].decode(errors='replace')
+
+p = argparse.ArgumentParser()
+p.add_argument('-H', default='127.0.0.1'); p.add_argument('-P', type=int, default=25575)
+p.add_argument('-p', required=True); p.add_argument('commands', nargs='+')
+a = p.parse_args()
+if a.H not in ('127.0.0.1', 'localhost', '::1'):
+    sys.exit('built-in RCON fallback only permits localhost')
+with socket.create_connection((a.H, a.P), timeout=10) as s:
+    packet(s, 1, 3, a.p)
+    if receive(s)[0] == -1: sys.exit('RCON authentication failed')
+    for i, command in enumerate(a.commands, 2):
+        packet(s, i, 2, command)
+        response = receive(s)[2]
+        if response: print(response)
+PYRCON
+        chmod 755 /usr/local/bin/mcrcon
+    fi
 }
 
 # ==================== 安装 Java ====================
@@ -380,8 +466,9 @@ download_server() {
             # Paper v3 API exposes current stable builds and checksums.
             local default_version="1.21.11"
 
-            if [[ "$use_bmcl" == "true" ]]; then
-                # 国内: BMCL 镜像
+            # Paper 仅使用提供精确构建号和 SHA-256 的官方 API。
+            if [[ "$use_bmcl" == "disabled-for-paper" ]]; then
+                # 保留镜像逻辑供将来镜像提供构建元数据和校验和时启用。
                 if [[ -n "$MC_VERSION" ]]; then
                     paper_version="$MC_VERSION"
                 else
@@ -422,6 +509,8 @@ download_server() {
                 fi
 
                 info "PaperMC 版本: ${paper_version}, 构建: ${paper_build:-未知}"
+                MC_VERSION="$paper_version"
+                RESOLVED_BUILD="${paper_build:-}"
                 jar_file="${MC_DIR}/paper.jar"
                 if [[ -n "${paper_url:-}" ]] && \
                    curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$paper_url" && \
@@ -441,56 +530,37 @@ download_server() {
             ;;
 
         vanilla)
-            local server_jar_url=""
-            local download_ok=false
-
-            if [[ "$use_bmcl" == "true" ]]; then
-                # 国内: BMCL 镜像
-                local mc_version
-                if [[ -n "$MC_VERSION" ]]; then
-                    mc_version="$MC_VERSION"
-                else
-                    mc_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://bmclapidoc.bangbang93.com/mc/game/version_manifest.json" 2>/dev/null | \
-                        python3 -c "import sys,json; print(json.load(sys.stdin)['latest']['release'])" 2>/dev/null || true)
-                fi
-
-                if [[ -n "$mc_version" ]]; then
-                    server_jar_url="https://bmclapidoc.bangbang93.com/version/${mc_version}/server"
-                    info "BMCL 原版版本: ${mc_version}"
-                fi
-            fi
-
-            # 国外或 BMCL 失败: 官方 Mojang API
-            if [[ -z "$server_jar_url" ]]; then
-                local version_json_url
-                version_json_url=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://launchermeta.mojang.com/mc/game/version_manifest.json" 2>/dev/null | \
-                    python3 -c "
+            local server_jar_url="" download_ok=false jar_sha1="" mc_version="${MC_VERSION:-}"
+            local version_json_url server_meta
+            # Prefer Mojang official metadata; BMCL is only a last-resort mirror.
+            version_json_url=$(curl -fsSL --max-time 20 "https://launchermeta.mojang.com/mc/game/version_manifest.json" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 target='${MC_VERSION}' if '${MC_VERSION}' else d['latest']['release']
-for v in d['versions']:
-    if v['id']==target:
-        print(v['url'])
-        break
+print(next(v['url'] for v in d['versions'] if v['id']==target))
 " 2>/dev/null || true)
-
-                if [[ -n "$version_json_url" ]]; then
-                    server_jar_url=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "$version_json_url" 2>/dev/null | \
-                        python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null || true)
+            if [[ -n "$version_json_url" ]]; then
+                server_meta=$(curl -fsSL --max-time 20 "$version_json_url" 2>/dev/null || true)
+                server_jar_url=$(printf '%s' "$server_meta" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server']['url'])" 2>/dev/null || true)
+                jar_sha1=$(printf '%s' "$server_meta" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['downloads']['server'].get('sha1',''))" 2>/dev/null || true)
+                mc_version=$(printf '%s' "$server_meta" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || true)
+            fi
+            if [[ -z "$server_jar_url" && -n "$mc_version" ]]; then
+                server_jar_url="https://bmclapidoc.bangbang93.com/version/${mc_version}/server"
+                warn "官方元数据失败，回退 BMCL 镜像"
+            fi
+            [[ -n "$server_jar_url" ]] || { error "无法获取原版服务器下载地址"; exit 1; }
+            info "下载地址: ${server_jar_url}"
+            MC_VERSION="${mc_version:-$MC_VERSION}"
+            jar_file="${MC_DIR}/server.jar"
+            if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$server_jar_url" && \
+               [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
+                if [[ -n "$jar_sha1" ]]; then
+                    echo "${jar_sha1}  ${jar_file}" | sha1sum -c - >/dev/null && download_ok=true || rm -f "$jar_file"
+                else
+                    download_ok=true
                 fi
             fi
-
-            if [[ -z "$server_jar_url" ]]; then
-                error "无法获取原版服务器下载地址"
-                exit 1
-            fi
-
-            info "下载地址: ${server_jar_url}"
-            jar_file="${MC_DIR}/server.jar"
-            if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 300 -o "$jar_file" "$server_jar_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 1000000 ]]; then
-                download_ok=true
-            fi
-
             if [[ "$download_ok" != "true" ]]; then
                 error "原版服务器下载失败"
                 exit 1
@@ -498,40 +568,39 @@ for v in d['versions']:
             ;;
 
         fabric)
-            local fabric_version="0.16.14"
-            local loader_version="1.0.1"
-            local mc_version="1.21.4"
-            local download_ok=false
-
+            local fabric_version loader_version mc_version download_ok=false
+            # Resolve latest stable game + loader + installer from Fabric meta.
             if [[ -n "$MC_VERSION" ]]; then
                 mc_version="$MC_VERSION"
             else
-                # 获取最新 MC 版本
-                local latest_mc
-                latest_mc=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://meta.fabricmc.net/v2/versions/game" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); print([v['version'] for v in d if v['stable']][0])" 2>/dev/null || true)
-                [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+                mc_version=$(curl -fsSL --max-time 20 "https://meta.fabricmc.net/v2/versions/game" | python3 -c "import sys,json; print(next(v['version'] for v in json.load(sys.stdin) if v.get('stable')))" 2>/dev/null || true)
+                [[ -n "$mc_version" ]] || mc_version="1.21.11"
             fi
+            fabric_version=$(curl -fsSL --max-time 20 "https://meta.fabricmc.net/v2/versions/loader" | python3 -c "import sys,json; d=json.load(sys.stdin); print(next(x['version'] for x in d if x.get('stable',True)))" 2>/dev/null || true)
+            loader_version=$(curl -fsSL --max-time 20 "https://meta.fabricmc.net/v2/versions/installer" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['version'] if isinstance(d,list) and d else '')" 2>/dev/null || true)
+            [[ -n "$fabric_version" ]] || fabric_version="0.16.14"
+            [[ -n "$loader_version" ]] || loader_version="1.0.1"
 
-            info "Fabric 版本: ${fabric_version}, MC: ${mc_version}"
+            info "Fabric loader: ${fabric_version}, installer: ${loader_version}, MC: ${mc_version}"
+            MC_VERSION="$mc_version"
+            RESOLVED_LOADER_VERSION="$fabric_version"
+            RESOLVED_INSTALLER_VERSION="$loader_version"
 
-            # 方式1: 通过 Fabric API 下载服务端 jar
             local fabric_url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/${fabric_version}/${loader_version}/server/jar"
             jar_file="${MC_DIR}/fabric-server.jar"
-
             if curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 180 -o "$jar_file" "$fabric_url" && [[ $(stat -c%s "$jar_file" 2>/dev/null || echo 0) -gt 500000 ]]; then
                 download_ok=true
             fi
 
-            # 方式2: 使用安装器
             if [[ "$download_ok" != "true" ]]; then
                 warn "直接下载失败，尝试使用安装器..."
                 local installer_jar="/tmp/fabric-installer.jar"
-                curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 60 -o "$installer_jar" "https://maven.fabricmc.net/net/fabricmc/fabric-installer/1.0.1/fabric-installer-1.0.1.jar"
+                curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 60 -o "$installer_jar" \
+                    "https://maven.fabricmc.net/net/fabricmc/fabric-installer/${loader_version}/fabric-installer-${loader_version}.jar" || true
                 if [[ -f "$installer_jar" ]] && [[ $(stat -c%s "$installer_jar" 2>/dev/null || echo 0) -gt 10000 ]]; then
-                    sudo -u "$MC_USER" java -jar "$installer_jar" server -dir "$MC_DIR" -mcversion "$mc_version" -loader "$fabric_version" -downloadMinecraft 2>/dev/null
-                    if [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
-                        jar_file="${MC_DIR}/fabric-server.jar"
+                    sudo -u "$MC_USER" java -jar "$installer_jar" server -dir "$MC_DIR" -mcversion "$mc_version" -loader "$fabric_version" -downloadMinecraft 2>/dev/null || true
+                    if [[ -f "${MC_DIR}/fabric-server.jar" ]] || [[ -f "${MC_DIR}/fabric-server-launch.jar" ]]; then
+                        jar_file=$(ls "${MC_DIR}"/fabric-server*.jar 2>/dev/null | head -1)
                         download_ok=true
                     fi
                     rm -f "$installer_jar"
@@ -546,72 +615,57 @@ for v in d['versions']:
             ;;
 
         forge)
-            local mc_version="1.21.4"
-            local forge_version="54.0.16"
-            local download_ok=false
-
-            if [[ -n "$MC_VERSION" ]]; then
-                mc_version="$MC_VERSION"
-            else
-                # 获取最新 MC 版本
-                local latest_mc
-                latest_mc=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
-                    python3 -c "import sys,json; d=json.load(sys.stdin); versions=sorted(d.keys(), reverse=True); print(versions[0])" 2>/dev/null || true)
-                [[ -n "$latest_mc" ]] && mc_version="$latest_mc"
+            local mc_version="${MC_VERSION:-1.21.1}" forge_version="" download_ok=false
+            local forge_meta forge_url installer_jar="/tmp/forge-installer.jar"
+            forge_meta=$(curl -fsSL --max-time 20 "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json" 2>/dev/null || true)
+            if [[ -z "$MC_VERSION" && -n "$forge_meta" ]]; then
+                mc_version=$(printf '%s' "$forge_meta" | python3 -c "import sys,json; d=json.load(sys.stdin); print(next(k.split('-')[0] for k in d.get('promos',{}) if k.endswith('-recommended')))" 2>/dev/null || true)
+                [[ -n "$mc_version" ]] || mc_version="1.21.1"
             fi
-
-            # 获取该 MC 版本的最新 Forge 版本
-            local forge_versions_json
-            forge_versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "https://files.minecraftforge.net/net/minecraftforge/forge/maven-metadata.json" 2>/dev/null | \
-                python3 -c "
+            if [[ -n "$forge_meta" ]]; then
+                forge_version=$(printf '%s' "$forge_meta" | python3 -c "
 import sys,json
-d=json.load(sys.stdin)
+d=json.load(sys.stdin).get('promos',{})
 v='${mc_version}'
-if v in d:
-    builds=d[v]
-    print(builds[-1] if isinstance(builds, list) else builds)
+print(d.get(v+'-recommended') or d.get(v+'-latest') or '')
 " 2>/dev/null || true)
-            [[ -n "$forge_versions_json" ]] && forge_version="$forge_versions_json"
-
+            fi
+            if [[ -z "$forge_version" ]]; then
+                forge_version=$(curl -fsSL --max-time 20 "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml" | python3 -c "
+import sys,re
+text=sys.stdin.read()
+vers=re.findall(r'<version>([^<]+)</version>', text)
+v='${mc_version}'
+cands=[x.split('-',1)[1] for x in vers if x.startswith(v+'-')]
+print(cands[-1] if cands else '')
+" 2>/dev/null || true)
+            fi
+            [[ -n "$forge_version" ]] || { error "无法解析 Forge 版本"; exit 1; }
             info "Forge 版本: ${mc_version}-${forge_version}"
-
-            # 下载 Forge 安装器
-            local installer_jar="/tmp/forge-installer.jar"
-            local forge_url="https://maven.minecraftforge.net/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-installer.jar"
-
-            curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 120 -o "$installer_jar" "$forge_url"
-
+            MC_VERSION="$mc_version"
+            RESOLVED_LOADER_VERSION="$forge_version"
+            forge_url="https://maven.minecraftforge.net/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-installer.jar"
+            curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 180 -o "$installer_jar" "$forge_url"
             if [[ ! -f "$installer_jar" ]] || [[ $(stat -c%s "$installer_jar" 2>/dev/null || echo 0) -lt 100000 ]]; then
-                error "Forge 安装器下载失败"
-                error "手动下载: https://files.minecraftforge.net/"
+                error "Forge 安装器下载失败: ${forge_url}"
                 exit 1
             fi
-
-            # 安装 Forge 服务端
-            info "安装 Forge 服务端 (这可能需要几分钟)..."
+            info "安装 Forge 服务端..."
+            install -m 644 -o "$MC_USER" -g "$MC_USER" "$installer_jar" "${MC_DIR}/forge-installer.jar"
             cd "$MC_DIR"
-            sudo -u "$MC_USER" java -jar "$installer_jar" --installServer . 2>/dev/null
-            rm -f "$installer_jar"
-
-            # Forge installation is driven by its generated run.sh/argument files.
+            sudo -u "$MC_USER" bash -c 'java -jar forge-installer.jar --installServer . > forge-install.log 2>&1' || true
+            [[ -f "${MC_DIR}/forge-install.log" ]] && mv -f "${MC_DIR}/forge-install.log" /tmp/forge-install.log || true
+            rm -f "$installer_jar" "${MC_DIR}/forge-installer.jar"
             if [[ -x "${MC_DIR}/run.sh" ]]; then
-                jar_file="${MC_DIR}/run.sh"
-                download_ok=true
+                jar_file="${MC_DIR}/run.sh"; download_ok=true
             else
                 local forge_jar
                 forge_jar=$(find "$MC_DIR" -maxdepth 1 -type f -name 'forge-*.jar' -print -quit 2>/dev/null || true)
-                if [[ -n "$forge_jar" ]]; then
-                    jar_file="$forge_jar"
-                    download_ok=true
-                elif [[ -f "${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar" ]]; then
-                    jar_file="${MC_DIR}/libraries/net/minecraftforge/forge/${mc_version}-${forge_version}/forge-${mc_version}-${forge_version}-server.jar"
-                    download_ok=true
-                fi
+                if [[ -n "$forge_jar" ]]; then jar_file="$forge_jar"; download_ok=true; fi
             fi
-
             if [[ "$download_ok" != "true" ]]; then
                 error "Forge 安装失败"
-                error "手动下载: https://files.minecraftforge.net/"
+                tail -40 /tmp/forge-install.log 2>/dev/null || true
                 exit 1
             fi
             ;;
@@ -623,6 +677,10 @@ if v in d:
 
 # ==================== 首次启动生成配置文件 ====================
 generate_configs() {
+    if [[ -f "${MC_DIR}/server.properties" && "$FORCE_CONFIG_REWRITE" != "1" ]]; then
+        info "保留现有 server.properties 和世界配置"
+        return 0
+    fi
     info "生成配置文件..."
 
     # 同意 EULA
@@ -681,6 +739,10 @@ EOF
 
 # ==================== 配置服务器 ====================
 configure_server() {
+    if [[ -f "${MC_DIR}/server.properties" && "$FORCE_CONFIG_REWRITE" != "1" ]]; then
+        info "检测到现有配置，未重写（设置 FORCE_CONFIG_REWRITE=1 可强制重写）"
+        return 0
+    fi
     info "写入优化配置..."
 
     local props_file="${MC_DIR}/server.properties"
@@ -790,6 +852,15 @@ create_start_script() {
             ;;
     esac
 
+    if [[ "$SERVER_TYPE" == "forge" && "$jar_file" == "run.sh" ]]; then
+        cat > "${MC_DIR}/user_jvm_args.txt" << EOF
+-Xms${MC_MEMORY_MIN}
+-Xmx${MC_MEMORY}
+${JVM_FLAGS[*]}
+EOF
+        chown "${MC_USER}:${MC_USER}" "${MC_DIR}/user_jvm_args.txt"
+    fi
+
     cat > "${MC_DIR}/start.sh" << STARTSCRIPT
 #!/bin/bash
 cd "${MC_DIR}"
@@ -880,7 +951,11 @@ create_manager_script() {
 SERVICE="mc-server"
 MC_DIR="/opt/minecraft"
 CREDENTIALS_FILE="/etc/minecraft/credentials.env"
+STATE_FILE="${MC_DIR}/.install-state"
+# shellcheck disable=SC1090
 source "$CREDENTIALS_FILE"
+# shellcheck disable=SC1090
+source "$STATE_FILE"
 RCON_PORT="$MC_RCON_PORT"
 RCON_PASSWORD="$MC_RCON_PASSWORD"
 RCON_ENABLED="${MC_ENABLE_RCON:-false}"
@@ -906,26 +981,28 @@ show_help() {
     echo "  cmd <命令>  执行服务器命令"
     echo "  players     查看在线玩家"
     echo "  say <消息>  广播消息"
-    echo "  whitelist   白名单管理"
+    echo "  whitelist <on|off|list|add|remove> [玩家]  白名单管理"
     echo ""
     echo "运维管理:"
-    echo "  backup      立即备份"
+    echo "  backup      立即创建带校验和的世界备份"
+    echo "  restore <latest|路径>  安全恢复备份"
     echo "  update      更新服务器"
     echo "  config      编辑配置"
     echo "  memory      查看内存"
     echo "  info        服务器信息"
     echo ""
     echo "内容管理:"
-    echo "  plugin      插件管理 (搜索/安装/列表/删除)"
+    echo "  plugin      Paper 插件管理 (搜索/安装/列表/删除)"
+    echo "  mod         Fabric/Forge Mod 管理 (搜索/安装/列表/删除)"
     echo "  datapack    数据包管理 (安装/列表/删除/重载)"
     echo "  resourcepack 资源包配置 (设置/移除)"
     echo "  packs       查看已安装内容总览"
     echo ""
 }
 
-cmd_start()   { systemctl start "$SERVICE" && echo -e "${GREEN}服务器已启动${NC}"; }
+cmd_start()   { systemctl reset-failed "$SERVICE" 2>/dev/null || true; systemctl start "$SERVICE" && echo -e "${GREEN}服务器已启动${NC}"; }
 cmd_stop()    { systemctl stop "$SERVICE" && echo -e "${YELLOW}服务器已停止${NC}"; }
-cmd_restart() { systemctl restart "$SERVICE" && echo -e "${GREEN}服务器已重启${NC}"; }
+cmd_restart() { systemctl reset-failed "$SERVICE" 2>/dev/null || true; systemctl restart "$SERVICE" && echo -e "${GREEN}服务器已重启${NC}"; }
 cmd_status()  { systemctl status "$SERVICE" --no-pager; }
 cmd_logs()    { journalctl -u "$SERVICE" -f --no-pager; }
 
@@ -963,41 +1040,78 @@ cmd_say() {
 }
 
 cmd_whitelist() {
-    echo "白名单管理:"
-    echo "  mc-manager cmd whitelist add <玩家名>"
-    echo "  mc-manager cmd whitelist remove <玩家名>"
-    echo "  mc-manager cmd whitelist list"
-    echo "  mc-manager cmd whitelist on"
-    echo "  mc-manager cmd whitelist off"
+    local action="${1:-}" player="${2:-}"
+    case "$action" in
+        on|off|list) cmd_cmd "whitelist $action" ;;
+        add|remove)
+            [[ -n "$player" && "$player" =~ ^[A-Za-z0-9_]{1,16}$ ]] || { echo "用法: mc-manager whitelist $action <玩家名>"; return 1; }
+            cmd_cmd "whitelist $action $player"
+            ;;
+        *) echo "用法: mc-manager whitelist <on|off|list|add|remove> [玩家名]"; return 1 ;;
+    esac
 }
 
 cmd_backup() {
-    local backup_dir="${MC_DIR}/backups"
-    local timestamp=$(date +%Y%m%d_%H%M%S)
-    local backup_file="${backup_dir}/world_backup_${timestamp}.tar.gz"
-
+    local backup_dir="${MC_DIR}/backups" timestamp backup_file world_dir
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    backup_file="${backup_dir}/world_backup_${timestamp}.tar.gz"
+    world_dir="${INSTALLED_WORLD_DIR:-${MC_DIR}/${INSTALLED_LEVEL_NAME:-world}}"
+    [[ -d "$world_dir" ]] || { echo -e "${RED}世界目录不存在: $world_dir${NC}" >&2; return 1; }
     mkdir -p "$backup_dir"
-    echo "正在备份..."
-
-    # 先保存世界（若安装了 mcrcon）
-    if [[ "$RCON_ENABLED" == "true" ]] && command -v mcrcon &>/dev/null; then
-        mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "save-off" "save-all" 2>/dev/null || true
-        sleep 3
+    exec 9>"${backup_dir}/.backup.lock"
+    flock -n 9 || { echo -e "${YELLOW}已有备份或恢复任务运行中${NC}"; return 1; }
+    local saves_disabled=false
+    if systemctl is-active --quiet "$SERVICE"; then
+        if [[ "$RCON_ENABLED" == "true" ]] && command -v mcrcon &>/dev/null; then
+            cmd_cmd "save-off" && cmd_cmd "save-all flush" && saves_disabled=true || true
+        fi
+        if [[ "$saves_disabled" != "true" ]]; then
+            systemctl stop "$SERVICE"
+            trap 'systemctl start "$SERVICE" >/dev/null 2>&1 || true' RETURN
+        fi
     fi
-
-    tar -czf "$backup_file" -C "${MC_DIR}" world 2>/dev/null
-
-    if [[ "$RCON_ENABLED" == "true" ]] && command -v mcrcon &>/dev/null; then
-        mcrcon -H 127.0.0.1 -P "$RCON_PORT" -p "$RCON_PASSWORD" "save-on" 2>/dev/null || true
+    trap '[[ "$saves_disabled" == "true" ]] && cmd_cmd "save-on" >/dev/null 2>&1 || true' RETURN
+    tar -czf "${backup_file}.tmp" -C "$MC_DIR" "$(basename "$world_dir")"
+    mv "${backup_file}.tmp" "$backup_file"
+    sha256sum "$backup_file" > "${backup_file}.sha256"
+    echo -e "${GREEN}备份成功: ${backup_file}${NC}"
+    mapfile -t old_backups < <(ls -1t "${backup_dir}"/world_backup_*.tar.gz 2>/dev/null | tail -n +21)
+    for f in "${old_backups[@]}"; do rm -f -- "$f" "$f.sha256"; done
+    if [[ "$saves_disabled" != "true" ]] && ! systemctl is-active --quiet "$SERVICE"; then
+        systemctl start "$SERVICE" || true
     fi
+    trap - RETURN
+}
 
-    if [[ -f "$backup_file" ]]; then
-        echo -e "${GREEN}备份成功: ${backup_file}${NC}"
-        # 保留最近20个备份
-        ls -t "${backup_dir}"/world_backup_*.tar.gz 2>/dev/null | tail -n +21 | xargs -r rm -f
+cmd_restore() {
+    [[ $EUID -eq 0 ]] || { echo -e "${RED}恢复需要 root${NC}" >&2; return 1; }
+    local requested="${1:-}" backup_dir="${MC_DIR}/backups" archive world_dir world_name tmp was_active=false rollback
+    [[ -n "$requested" ]] || { echo "用法: mc-manager restore <latest|备份路径>"; return 1; }
+    if [[ "$requested" == latest ]]; then
+        archive=$(ls -1t "$backup_dir"/world_backup_*.tar.gz 2>/dev/null | head -1)
     else
-        echo -e "${RED}备份失败${NC}"
+        archive=$(realpath -e -- "$requested" 2>/dev/null) || { echo -e "${RED}备份不存在${NC}"; return 1; }
+        [[ "$archive" == "$backup_dir"/* ]] || { echo -e "${RED}只允许恢复 $backup_dir 内的备份${NC}"; return 1; }
     fi
+    [[ -f "$archive" && -f "$archive.sha256" ]] || { echo -e "${RED}备份或校验文件不存在${NC}"; return 1; }
+    (cd "$(dirname "$archive")" && sha256sum -c "$(basename "$archive").sha256") || return 1
+    tar -tzf "$archive" | python3 -c 'import sys; p=[x.strip() for x in sys.stdin]; assert p and all(not x.startswith("/") and ".." not in x.split("/") for x in p)' || { echo -e "${RED}备份含路径穿越${NC}"; return 1; }
+    world_dir="${INSTALLED_WORLD_DIR:-${MC_DIR}/${INSTALLED_LEVEL_NAME:-world}}"; world_name=$(basename "$world_dir")
+    tar -tzf "$archive" | python3 -c "import sys; p=[x.strip('./') for x in sys.stdin]; assert p and all(x=='$world_name' or x.startswith('$world_name/') for x in p)" || { echo -e "${RED}备份世界与当前配置不匹配${NC}"; return 1; }
+    exec 9>"${backup_dir}/.backup.lock"; flock -n 9 || { echo "已有备份或恢复任务运行中"; return 1; }
+    systemctl is-active --quiet "$SERVICE" && was_active=true
+    $was_active && systemctl stop "$SERVICE"
+    rollback="${world_dir}.pre-restore.$(date +%Y%m%d_%H%M%S)"
+    [[ -e "$world_dir" ]] && mv "$world_dir" "$rollback"
+    tmp=$(mktemp -d "${MC_DIR}/.restore.XXXXXX")
+    if tar -xzf "$archive" -C "$tmp" --no-same-owner --no-same-permissions && [[ -d "$tmp/$world_name" ]]; then
+        mv "$tmp/$world_name" "$world_dir"; chown -R minecraft:minecraft "$world_dir"; rm -rf "$tmp"
+        echo -e "${GREEN}恢复成功；恢复前世界保留于: $rollback${NC}"
+    else
+        rm -rf "$tmp" "$world_dir"; [[ -e "$rollback" ]] && mv "$rollback" "$world_dir"
+        $was_active && systemctl start "$SERVICE"; echo -e "${RED}恢复失败，已回滚${NC}"; return 1
+    fi
+    $was_active && systemctl start "$SERVICE"
 }
 
 cmd_update() {
@@ -1010,31 +1124,15 @@ cmd_update() {
     systemctl is-active --quiet "$SERVICE" && was_active=true
     systemctl stop "$SERVICE" || true
 
-    local server_type="paper"
-    if [[ -f "${MC_DIR}/paper.jar" ]]; then
-        server_type="paper"
-    elif [[ -f "${MC_DIR}/fabric-server.jar" ]]; then
-        server_type="fabric"
-    elif [[ -x "${MC_DIR}/run.sh" ]] || find "$MC_DIR" -maxdepth 1 -name 'forge-*.jar' -print -quit | grep -q .; then
-        server_type="forge"
-    elif [[ -f "${MC_DIR}/server.jar" ]]; then
-        server_type="vanilla"
-    fi
+    local server_type="${INSTALLED_SERVER_TYPE:-}"
+    [[ -n "$server_type" ]] || { echo -e "${RED}缺少安装状态，请重新运行安装器${NC}"; return 1; }
 
-    if [[ "$server_type" == "forge" ]]; then
-        echo -e "${YELLOW}Forge 更新需要运行对应版本安装器，未修改现有文件。${NC}"
-        $was_active && systemctl start "$SERVICE" || true
-        return 1
-    fi
-
-    local jar_file url tmp_file old_hash new_hash
+    local jar_file url tmp_file old_hash new_hash expected_sha1=""
     case "$server_type" in
         paper)
             jar_file="${MC_DIR}/paper.jar"
             local paper_version paper_build_json paper_sha256
-            paper_version=$(curl -fsSL --max-time 20 "https://fill.papermc.io/v3/projects/paper" | python3 -c "import sys,json; print(json.load(sys.stdin)['versions']['1.21'][0])") || {
-                $was_active && systemctl start "$SERVICE" || true; return 1;
-            }
+            paper_version="${INSTALLED_MC_VERSION}"
             paper_build_json=$(curl -fsSL --max-time 20 "https://fill.papermc.io/v3/projects/paper/versions/${paper_version}/builds/latest") || {
                 $was_active && systemctl start "$SERVICE" || true; return 1;
             }
@@ -1043,20 +1141,33 @@ cmd_update() {
         vanilla)
             jar_file="${MC_DIR}/server.jar"
             local version_json_url
-            version_json_url=$(curl -fsSL --max-time 20 "https://launchermeta.mojang.com/mc/game/version_manifest.json" | python3 -c "import sys,json; d=json.load(sys.stdin); latest=d['latest']['release']; print(next(v['url'] for v in d['versions'] if v['id']==latest))") || {
+            version_json_url=$(curl -fsSL --max-time 20 "https://launchermeta.mojang.com/mc/game/version_manifest.json" | python3 -c "import sys,json; d=json.load(sys.stdin); target='${INSTALLED_MC_VERSION}'; print(next(v['url'] for v in d['versions'] if v['id']==target))") || {
                 $was_active && systemctl start "$SERVICE" || true; return 1;
             }
-            url=$(curl -fsSL --max-time 20 "$version_json_url" | python3 -c "import sys,json; print(json.load(sys.stdin)['downloads']['server']['url'])") || {
+            read -r url expected_sha1 < <(curl -fsSL --max-time 20 "$version_json_url" | python3 -c "import sys,json; x=json.load(sys.stdin)['downloads']['server']; print(x['url'],x['sha1'])") || {
                 $was_active && systemctl start "$SERVICE" || true; return 1;
             }
             ;;
         fabric)
             jar_file="${MC_DIR}/fabric-server.jar"
             local mc_version
-            mc_version=$(curl -fsSL --max-time 20 "https://meta.fabricmc.net/v2/versions/game" | python3 -c "import sys,json; print(next(v['version'] for v in json.load(sys.stdin) if v['stable']))") || {
-                $was_active && systemctl start "$SERVICE" || true; return 1;
-            }
-            url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/0.16.14/1.0.1/server/jar"
+            mc_version="${INSTALLED_MC_VERSION}"
+            url="https://meta.fabricmc.net/v2/versions/loader/${mc_version}/${INSTALLED_LOADER_VERSION}/${INSTALLED_INSTALLER_VERSION}/server/jar"
+            ;;
+        forge)
+            local forge_full="${INSTALLED_MC_VERSION}-${INSTALLED_LOADER_VERSION}" installer="${MC_DIR}/forge-installer.new.jar" stage
+            url="https://maven.minecraftforge.net/net/minecraftforge/forge/${forge_full}/forge-${forge_full}-installer.jar"
+            curl -fL --retry 3 --max-time 300 -o "$installer" "$url" || { rm -f "$installer"; $was_active && systemctl start "$SERVICE"; return 1; }
+            stage=$(mktemp -d)
+            if (cd "$stage" && java -jar "$installer" --installServer .) && [[ -x "$stage/run.sh" ]]; then
+                cp -a "$MC_DIR/libraries" "${MC_DIR}/libraries.bak" 2>/dev/null || true
+                cp -a "$stage/." "$MC_DIR/"
+                rm -rf "$stage" "$installer"
+                echo -e "${GREEN}Forge ${forge_full} 已重新安装并验证 run.sh${NC}"
+                $was_active && systemctl start "$SERVICE"
+                return 0
+            fi
+            rm -rf "$stage" "$installer"; $was_active && systemctl start "$SERVICE"; return 1
             ;;
     esac
 
@@ -1064,7 +1175,8 @@ cmd_update() {
     rm -f "$tmp_file"
     if ! curl -fL --connect-timeout 20 --retry 3 --max-time 300 -o "$tmp_file" "$url" || \
        [[ $(stat -c%s "$tmp_file" 2>/dev/null || echo 0) -lt 500000 ]] || \
-       { [[ "$server_type" == "paper" ]] && ! echo "${paper_sha256}  ${tmp_file}" | sha256sum -c - >/dev/null; }; then
+       { [[ "$server_type" == "paper" ]] && ! echo "${paper_sha256}  ${tmp_file}" | sha256sum -c - >/dev/null; } || \
+       { [[ -n "$expected_sha1" ]] && [[ "$(sha1sum "$tmp_file" | cut -d' ' -f1)" != "$expected_sha1" ]]; }; then
         rm -f "$tmp_file"
         echo -e "${RED}下载或文件校验失败，保留原版本${NC}" >&2
         $was_active && systemctl start "$SERVICE" || true
@@ -1115,14 +1227,14 @@ cmd_info() {
         server_jar="Unknown"
     fi
     echo -e "${CYAN}=== 服务器信息 ===${NC}"
-    echo "服务器类型:  ${server_jar}"
-    echo "游戏版本:    ${mc_version:-未知}"
-    echo "服务器地址:  ${ip}:${MC_PORT}"
-    echo "RCON端口:    ${RCON_PORT}"
-    echo "RCON密码:    ${RCON_PASSWORD}"
+    echo "服务器类型:  ${INSTALLED_SERVER_TYPE:-未知}"
+    echo "游戏版本:    ${INSTALLED_MC_VERSION:-未知}"
+    echo "构建/加载器: ${INSTALLED_BUILD:-${INSTALLED_LOADER_VERSION:-无}}"
+    echo "服务器地址:  ${ip}:${INSTALLED_MC_PORT:-25565}"
+    echo "RCON状态:    ${RCON_ENABLED}"
     echo "状态:        $(systemctl is-active "$SERVICE")"
     echo "配置文件:    ${MC_DIR}/server.properties"
-    echo "世界目录:    ${MC_DIR}/world"
+    echo "世界目录:    ${INSTALLED_WORLD_DIR:-${MC_DIR}/${INSTALLED_LEVEL_NAME:-world}}"
 }
 
 # ==================== 插件管理 (Modrinth API) ====================
@@ -1130,12 +1242,11 @@ cmd_plugin() {
     local subcmd="${1:-help}"
     shift 2>/dev/null
 
+    [[ "${INSTALLED_SERVER_TYPE:-}" == "paper" ]] || { echo -e "${RED}插件命令仅支持 Paper${NC}"; return 1; }
+    local mc_version="${INSTALLED_MC_VERSION:-}"
+    [[ -n "$mc_version" ]] || { echo -e "${RED}缺少已安装游戏版本${NC}"; return 1; }
     local plugins_dir="${MC_DIR}/plugins"
     local modrinth_api="https://api.modrinth.com/v2"
-    # 通过版本清单获取当前 MC 版本
-    local mc_version
-    mc_version=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 10 "${modrinth_api}/search?query=placeholder&limit=1" 2>/dev/null | \
-        python3 -c "import sys,json; print(json.load(sys.stdin)['hits'][0]['versions'][-1])" 2>/dev/null || echo "")
 
     case "$subcmd" in
         search)
@@ -1146,7 +1257,7 @@ cmd_plugin() {
             fi
             echo -e "${CYAN}搜索插件: ${query}${NC}"
             local result
-            result=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=10" 2>/dev/null || true)
+            result=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 --get --data-urlencode "query=${query}" --data-urlencode "facets=[[\"project_type:plugin\"],[\"versions:${mc_version}\"],[\"categories:paper\",\"categories:bukkit\",\"categories:spigot\"]]" --data-urlencode "limit=10" "${modrinth_api}/search" 2>/dev/null || true)
             if [[ -z "$result" ]]; then
                 echo -e "${YELLOW}无法连接 Modrinth API，请检查网络${NC}"
                 return 1
@@ -1185,14 +1296,14 @@ else:
 
             echo -e "${CYAN}搜索插件: ${query}${NC}"
             local result
-            result=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/search?query=${query}&facets=%5B%5B%22project_type%3Aplugin%22%5D%5D&limit=5" 2>/dev/null || true)
+            result=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 --get --data-urlencode "query=${query}" --data-urlencode "facets=[[\"project_type:plugin\"],[\"versions:${mc_version}\"],[\"categories:paper\",\"categories:bukkit\",\"categories:spigot\"]]" --data-urlencode "limit=5" "${modrinth_api}/search" 2>/dev/null || true)
 
             if [[ -z "$result" ]]; then
                 echo -e "${YELLOW}无法连接 Modrinth API，尝试直接下载...${NC}"
                 # 尝试用 slug 直接获取
                 local project_id="$query"
                 local versions_json
-                versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
+                versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/project/${project_id}/version?game_versions=%5B%22${mc_version}%22%5D&loaders=%5B%22paper%22%2C%22bukkit%22%2C%22spigot%22%5D" 2>/dev/null || true)
                 if [[ -n "$versions_json" ]]; then
                     local dl_url filename
                     dl_url=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['url'])" 2>/dev/null || true)
@@ -1223,7 +1334,7 @@ else:
 
             # 获取版本信息
             local versions_json
-            versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/project/${project_id}/version" 2>/dev/null || true)
+            versions_json=$(set +o pipefail; curl -fL --connect-timeout 20 --retry 3 --retry-delay 3 --max-time 15 "${modrinth_api}/project/${project_id}/version?game_versions=%5B%22${mc_version}%22%5D&loaders=%5B%22paper%22%2C%22bukkit%22%2C%22spigot%22%5D" 2>/dev/null || true)
 
             local dl_url filename
             dl_url=$(echo "$versions_json" | python3 -c "import sys,json; v=json.load(sys.stdin); print(v[0]['files'][0]['url'])" 2>/dev/null || true)
@@ -1298,12 +1409,44 @@ else:
     esac
 }
 
+# ==================== Mod 管理 (Modrinth API) ====================
+cmd_mod() {
+    local subcmd="${1:-help}"; shift 2>/dev/null || true
+    local loader="${INSTALLED_SERVER_TYPE:-}" game="${INSTALLED_MC_VERSION:-}" dir="${MC_DIR}/mods" api="https://api.modrinth.com/v2"
+    [[ "$loader" == fabric || "$loader" == forge ]] || { echo -e "${RED}Mod 命令仅支持 Fabric/Forge${NC}"; return 1; }
+    case "$subcmd" in
+        search)
+            [[ -n "$*" ]] || { echo "用法: mc-manager mod search <关键词>"; return 1; }
+            curl -fsSL --get --data-urlencode "query=$*" --data-urlencode 'facets=[["project_type:mod"]]' "$api/search" | python3 -c "import json,sys; d=json.load(sys.stdin); [print(f\"{x['slug']}: {x['title']} - {x['description']}\") for x in d.get('hits',[]) if '$game' in x.get('versions',[]) and '$loader' in x.get('categories',[])]"
+            ;;
+        install)
+            local project="${1:-}" meta versions url name tmp
+            [[ "$project" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "用法: mc-manager mod install <项目slug或ID>"; return 1; }
+            meta=$(curl -fsSL "$api/project/$project") || return 1
+            [[ $(printf '%s' "$meta" | python3 -c "import json,sys; print(json.load(sys.stdin)['project_type'])") == mod ]] || { echo -e "${RED}拒绝安装非 Mod 项目${NC}"; return 1; }
+            versions=$(curl -fsSL "$api/project/$project/version?game_versions=%5B%22${game}%22%5D&loaders=%5B%22${loader}%22%5D") || return 1
+            read -r url name < <(printf '%s' "$versions" | python3 -c "import json,sys; v=json.load(sys.stdin); assert v; f=next((x for x in v[0]['files'] if x.get('primary')),v[0]['files'][0]); print(f['url'],f['filename'])") || { echo -e "${RED}没有兼容 $loader/$game 的版本${NC}"; return 1; }
+            [[ "$name" == *.jar ]] || { echo -e "${RED}兼容文件不是 JAR，拒绝安装${NC}"; return 1; }
+            mkdir -p "$dir"; tmp=$(mktemp "$dir/.download.XXXXXX")
+            curl -fL --retry 3 -o "$tmp" "$url" && [[ $(stat -c%s "$tmp") -gt 10000 ]] || { rm -f "$tmp"; return 1; }
+            mv "$tmp" "$dir/$name"; chown minecraft:minecraft "$dir/$name"; echo -e "${GREEN}已安装: $name${NC}"
+            ;;
+        list) mkdir -p "$dir"; printf '%s\n' "$dir"/*.jar | while read -r f; do [[ -e "$f" ]] && basename "$f"; done ;;
+        remove)
+            local name="${1:-}" path
+            [[ "$name" == "$(basename -- "$name")" && "$name" == *.jar ]] || { echo "用法: mc-manager mod remove <完整JAR文件名>"; return 1; }
+            path="$dir/$name"; [[ -f "$path" ]] || { echo -e "${RED}未找到: $name${NC}"; return 1; }; rm -- "$path"; echo -e "${GREEN}已删除: $name${NC}"
+            ;;
+        *) echo "用法: mc-manager mod <search|install|list|remove> [...]"; [[ "$subcmd" == help ]] || return 1 ;;
+    esac
+}
+
 # ==================== 数据包管理 ====================
 cmd_datapack() {
     local subcmd="${1:-help}"
     shift 2>/dev/null
 
-    local datapacks_dir="${MC_DIR}/world/datapacks"
+    local datapacks_dir="${INSTALLED_WORLD_DIR:-${MC_DIR}/${INSTALLED_LEVEL_NAME:-world}}/datapacks"
 
     case "$subcmd" in
         install)
@@ -1333,6 +1476,14 @@ cmd_datapack() {
             else
                 echo -e "${RED}文件不存在: ${source}${NC}"
                 return 1
+            fi
+            if [[ "$filename" == *.zip ]]; then
+                unzip -tqq "${datapacks_dir}/${filename}" >/dev/null || { rm -f "${datapacks_dir}/${filename}"; echo -e "${RED}ZIP 损坏${NC}"; return 1; }
+                unzip -Z1 "${datapacks_dir}/${filename}" | python3 -c 'import sys; p=[x.strip() for x in sys.stdin]; assert "pack.mcmeta" in p and all(not x.startswith("/") and ".." not in x.split("/") for x in p)' || { rm -f "${datapacks_dir}/${filename}"; echo -e "${RED}不是有效或安全的数据包${NC}"; return 1; }
+            elif [[ -d "${datapacks_dir}/${filename}" && -f "${datapacks_dir}/${filename}/pack.mcmeta" ]]; then
+                :
+            else
+                rm -rf "${datapacks_dir:?}/${filename}"; echo -e "${RED}数据包必须是含 pack.mcmeta 的 ZIP/目录${NC}"; return 1
             fi
             echo -e "${YELLOW}重载数据包: mc-manager datapack reload${NC}"
             ;;
@@ -1392,6 +1543,23 @@ cmd_resourcepack() {
     shift 2>/dev/null
 
     local props="${MC_DIR}/server.properties"
+    upsert_property() {
+        local key="$1" value="$2" tmp
+        tmp=$(mktemp)
+        python3 - "$props" "$key" "$value" > "$tmp" <<'PY'
+import sys
+path,key,value=sys.argv[1:]
+lines=open(path,encoding='utf-8').read().splitlines()
+out=[]; done=False
+for line in lines:
+    if line.startswith(key+'='):
+        if not done: out.append(key+'='+value); done=True
+    else: out.append(line)
+if not done: out.append(key+'='+value)
+print('\n'.join(out))
+PY
+        chown --reference="$props" "$tmp"; chmod --reference="$props" "$tmp"; mv "$tmp" "$props"
+    }
 
     case "$subcmd" in
         set)
@@ -1402,6 +1570,8 @@ cmd_resourcepack() {
                 echo "示例: mc-manager resourcepack set https://example.com/pack.zip abc123..."
                 return 1
             fi
+            [[ "$url" =~ ^https:// ]] || { echo -e "${RED}资源包必须使用 HTTPS URL${NC}"; return 1; }
+            [[ -z "$sha1" || "$sha1" =~ ^[a-fA-F0-9]{40}$ ]] || { echo -e "${RED}SHA1 必须是 40 位十六进制${NC}"; return 1; }
             # 计算 SHA1（如果是本地文件）
             if [[ -f "$url" ]]; then
                 sha1=$(sha1sum "$url" | awk '{print $1}')
@@ -1410,11 +1580,9 @@ cmd_resourcepack() {
             fi
             # 修改 server.properties
             if [[ -f "$props" ]]; then
-                sed -i "s|^resource-pack=.*|resource-pack=${url}|" "$props"
-                if [[ -n "$sha1" ]]; then
-                    sed -i "s|^resource-pack-sha1=.*|resource-pack-sha1=${sha1}|" "$props"
-                fi
-                sed -i "s|^require-resource-pack=.*|require-resource-pack=false|" "$props"
+                upsert_property resource-pack "$url"
+                upsert_property resource-pack-sha1 "$sha1"
+                upsert_property require-resource-pack false
                 echo -e "${GREEN}资源包已设置${NC}"
                 echo "URL: ${url}"
                 [[ -n "$sha1" ]] && echo "SHA1: ${sha1}"
@@ -1426,9 +1594,9 @@ cmd_resourcepack() {
 
         remove)
             if [[ -f "$props" ]]; then
-                sed -i "s|^resource-pack=.*|resource-pack=|" "$props"
-                sed -i "s|^resource-pack-sha1=.*|resource-pack-sha1=|" "$props"
-                sed -i "s|^require-resource-pack=.*|require-resource-pack=false|" "$props"
+                upsert_property resource-pack ""
+                upsert_property resource-pack-sha1 ""
+                upsert_property require-resource-pack false
                 echo -e "${GREEN}资源包配置已移除${NC}"
                 echo -e "${YELLOW}重启服务器生效: mc-manager restart${NC}"
             fi
@@ -1462,9 +1630,10 @@ cmd_packs() {
     echo ""
 
     # 数据包
-    echo -e "${GREEN}[数据包]${NC} ${MC_DIR}/world/datapacks/"
-    if ls "${MC_DIR}/world/datapacks/"*.zip &>/dev/null; then
-        for f in "${MC_DIR}/world/datapacks/"*.zip; do
+    local datapack_world="${INSTALLED_WORLD_DIR:-${MC_DIR}/${INSTALLED_LEVEL_NAME:-world}}"
+    echo -e "${GREEN}[数据包]${NC} ${datapack_world}/datapacks/"
+    if ls "${datapack_world}/datapacks/"*.zip &>/dev/null; then
+        for f in "${datapack_world}/datapacks/"*.zip; do
             echo "  - $(basename "$f")"
         done
     else
@@ -1493,18 +1662,21 @@ case "${1:-help}" in
     cmd)      shift; cmd_cmd "$@" ;;
     players)  cmd_players ;;
     say)      shift; cmd_say "$@" ;;
-    whitelist) cmd_whitelist ;;
+    whitelist) shift; cmd_whitelist "$@" ;;
     backup)   cmd_backup ;;
+    restore)  shift; cmd_restore "$@" ;;
     update)   cmd_update ;;
     config)   cmd_config ;;
     memory)   cmd_memory ;;
     info)     cmd_info ;;
     version)  cmd_info ;;
     plugin)   shift; cmd_plugin "$@" ;;
+    mod)      shift; cmd_mod "$@" ;;
     datapack) shift; cmd_datapack "$@" ;;
     resourcepack) shift; cmd_resourcepack "$@" ;;
     packs)    cmd_packs ;;
-    *)        show_help ;;
+    help|-h|--help) show_help ;;
+    *)        echo -e "${RED}未知命令: $1${NC}" >&2; show_help >&2; exit 2 ;;
 esac
 MANAGEREOF
 
@@ -1667,16 +1839,34 @@ main() {
     check_root
     check_system
     check_resources
+    load_install_state
     user_config
     mkdir -p "$(dirname "$CREDENTIALS_FILE")"
-    umask 077
-    {
-        printf 'MC_ENABLE_RCON=%q\n' "$MC_ENABLE_RCON"
-        printf 'MC_RCON_PORT=%q\n' "$MC_RCON_PORT"
-        printf 'MC_RCON_PASSWORD=%q\n' "$MC_RCON_PASSWORD"
-    } > "$CREDENTIALS_FILE"
-    chown root:root "$CREDENTIALS_FILE"
-    chmod 600 "$CREDENTIALS_FILE"
+    if [[ -f "$CREDENTIALS_FILE" && "$FORCE_CONFIG_REWRITE" != "1" ]]; then
+        # shellcheck disable=SC1090
+        source "$CREDENTIALS_FILE"
+        info "保留现有 RCON 凭证: ${CREDENTIALS_FILE}"
+    else
+        umask 077
+        {
+            printf 'MC_ENABLE_RCON=%q\n' "$MC_ENABLE_RCON"
+            printf 'MC_RCON_PORT=%q\n' "$MC_RCON_PORT"
+            printf 'MC_RCON_PASSWORD=%q\n' "$MC_RCON_PASSWORD"
+        } > "$CREDENTIALS_FILE"
+        chown root:root "$CREDENTIALS_FILE"
+        chmod 600 "$CREDENTIALS_FILE"
+    fi
+    # 允许显式覆盖 RCON 开关
+    if [[ -n "$MC_ENABLE_RCON_WAS_SET" ]]; then
+        sed -i "s/^MC_ENABLE_RCON=.*/MC_ENABLE_RCON=$(printf '%q' "$MC_ENABLE_RCON")/" "$CREDENTIALS_FILE"
+        if [[ -f "${MC_DIR}/server.properties" ]]; then
+            if grep -q '^enable-rcon=' "${MC_DIR}/server.properties"; then
+                sed -i "s/^enable-rcon=.*/enable-rcon=${MC_ENABLE_RCON}/" "${MC_DIR}/server.properties"
+            else
+                echo "enable-rcon=${MC_ENABLE_RCON}" >> "${MC_DIR}/server.properties"
+            fi
+        fi
+    fi
 
     echo -e "\n${CYAN}${BOLD}即将执行部署步骤:${NC}"
     echo "  [1] 安装依赖"
@@ -1705,6 +1895,7 @@ main() {
     install_java
     setup_user_and_dir
     download_server
+    save_install_state
     generate_configs
     configure_server
     create_start_script

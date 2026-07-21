@@ -19,8 +19,9 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ==================== 可配置变量 ====================
-STEAM_USER="steam"
-PAL_SERVER_DIR="/home/${STEAM_USER}/Steam/steamapps/common/PalServer"
+STEAM_USER="${STEAM_USER:-steam}"
+STEAM_HOME="/home/${STEAM_USER}"
+PAL_SERVER_DIR="${PAL_SERVER_DIR:-${STEAM_HOME}/PalServer}"
 PAL_CONFIG_DIR="${PAL_SERVER_DIR}/Pal/Saved/Config/LinuxServer"
 PAL_SETTINGS_FILE="${PAL_CONFIG_DIR}/PalWorldSettings.ini"
 PAL_SAVE_DIR="${PAL_SERVER_DIR}/Pal/Saved"
@@ -47,6 +48,7 @@ SERVER_NAME="${SERVER_NAME:-Palworld Server}"
 SERVER_PASSWORD="${SERVER_PASSWORD:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
+FORCE_CONFIG_REWRITE="${FORCE_CONFIG_REWRITE:-0}"
 
 # 内存限制 (systemd cgroup, 防止内存泄漏拖垮系统)
 # 由 compute_memory_limits() 根据系统内存动态计算
@@ -67,6 +69,10 @@ generate_password() {
 
 write_credentials_file() {
     mkdir -p "$(dirname "$CREDENTIALS_FILE")"
+    if [[ -s "$CREDENTIALS_FILE" && "$FORCE_CONFIG_REWRITE" != "1" ]]; then
+        info "保留现有凭证: ${CREDENTIALS_FILE}"
+        return
+    fi
     umask 077
     {
         printf 'RCON_PORT=%q\n' "$RCON_PORT"
@@ -76,6 +82,16 @@ write_credentials_file() {
     chown root:"${STEAM_USER}" "$CREDENTIALS_FILE"
     chmod 640 "$CREDENTIALS_FILE"
     info "管理员凭证已保存到 ${CREDENTIALS_FILE} (root:${STEAM_USER} 640)"
+}
+
+load_existing_credentials() {
+    if [[ -s "$CREDENTIALS_FILE" && "$FORCE_CONFIG_REWRITE" != "1" ]]; then
+        # shellcheck disable=SC1090
+        source "$CREDENTIALS_FILE"
+        RCON_PORT="${RCON_PORT:-25575}"
+        REST_API_PORT="${REST_API_PORT:-8212}"
+        info "检测到现有安装，将保留管理员凭证与端口配置"
+    fi
 }
 
 # ==================== 系统检查 ====================
@@ -99,11 +115,9 @@ check_system() {
         ubuntu|debian)
             info "检测到系统: $PRETTY_NAME"
             ;;
-        centos|rhel|rocky|almalinux)
-            info "检测到系统: $PRETTY_NAME (RHEL系)"
-            ;;
         *)
-            warn "当前系统为 $PRETTY_NAME，脚本针对 Ubuntu/Debian 优化，其他系统可能需要手动调整"
+            error "此独立脚本仅支持 Debian/Ubuntu（目标平台 Debian 13）"
+            exit 1
             ;;
     esac
 }
@@ -333,65 +347,53 @@ setup_swap() {
 # ==================== 安装 SteamCMD ====================
 install_steamcmd_from_archive() {
     local steamcmd_dir="/opt/steamcmd"
-    local archive="/tmp/steamcmd_linux.tar.gz"
+    local archive
+    archive=$(mktemp /tmp/steamcmd.XXXXXX.tar.gz)
+    trap 'rm -f "$archive"' RETURN
 
-    info "使用安装包安装 SteamCMD: ${STEAMCMD_URL}"
+    info "使用 Valve 官方安装包安装 SteamCMD: ${STEAMCMD_URL}"
     mkdir -p "$steamcmd_dir"
     if [[ -f "$STEAMCMD_URL" ]]; then
         cp "$STEAMCMD_URL" "$archive"
     else
-        curl -fL --connect-timeout 20 --retry 3 --retry-delay 5 "$STEAMCMD_URL" -o "$archive"
+        curl -fL --proto '=https' --tlsv1.2 --connect-timeout 20 --retry 3 --retry-all-errors "$STEAMCMD_URL" -o "$archive"
     fi
+    tar -tzf "$archive" >/dev/null
     tar -xzf "$archive" -C "$steamcmd_dir"
-    ln -sf "${steamcmd_dir}/steamcmd.sh" /usr/bin/steamcmd
+    chmod 755 "${steamcmd_dir}/steamcmd.sh" "${steamcmd_dir}/linux32/steamcmd" 2>/dev/null || true
+    chown -R root:root "$steamcmd_dir"
+    [[ -x "${steamcmd_dir}/steamcmd.sh" ]] || { error "SteamCMD 官方包内容无效"; return 1; }
+    rm -f /usr/local/bin/steamcmd
+    cat > /usr/local/bin/steamcmd <<'STEAMCMD_WRAPPER'
+#!/bin/bash
+exec /opt/steamcmd/steamcmd.sh "$@"
+STEAMCMD_WRAPPER
+    chmod 755 /usr/local/bin/steamcmd
     info "SteamCMD 安装到 ${steamcmd_dir}"
 }
 
 install_steamcmd() {
+    info "更新软件源并安装 Debian/Ubuntu 依赖..."
+    dpkg --add-architecture i386
+    apt-get update -y
+    apt-get install -y sudo python3 jq util-linux curl ca-certificates tar gzip iproute2 ufw lib32gcc-s1 libc6-i386 libstdc++6:i386
 
     if command -v steamcmd &>/dev/null; then
-        info "SteamCMD 已安装，跳过"
+        info "SteamCMD 已安装"
         return
     fi
 
-    info "更新软件源并安装依赖..."
-    apt-get update -y
-
-    # 安装通用依赖
-    apt-get install -y curl wget screen jq python3
-
-    case $OS in
-        ubuntu)
-            add-apt-repository multiverse -y
-            dpkg --add-architecture i386
-            apt-get update -y
-            apt-get install -y steamcmd || install_steamcmd_from_archive
-            ;;
-        debian)
-            apt-get install -y software-properties-common
-            apt-add-repository non-free -y
-            dpkg --add-architecture i386
-            apt-get update -y
-            apt-get install -y steamcmd || install_steamcmd_from_archive
-            ;;
-        centos|rhel|rocky|almalinux)
-            info "RHEL系系统，手动安装 SteamCMD..."
-            install_steamcmd_from_archive
-            ;;
-        *)
-            apt-get install -y lib32gcc-s1 steamcmd || {
-                warn "包管理器安装失败，手动下载 SteamCMD..."
-                install_steamcmd_from_archive
-            }
-            ;;
-    esac
-
-    # 创建符号链接
-    if [[ -f /usr/games/steamcmd ]] && [[ ! -f /usr/bin/steamcmd ]]; then
-        ln -sf /usr/games/steamcmd /usr/bin/steamcmd
-        info "已创建 steamcmd 符号链接"
+    # 软件源中存在 steamcmd 时优先使用；Debian 13 默认未启用 non-free，直接回退
+    # Valve 官方归档，避免修改用户的软件源或依赖脆弱的 apt-add-repository。
+    if ! apt-get install -y steamcmd; then
+        warn "软件源没有可用的 SteamCMD，改用 Valve 官方归档"
+        install_steamcmd_from_archive
     fi
 
+    if [[ -x /usr/games/steamcmd && ! -e /usr/local/bin/steamcmd ]]; then
+        ln -s /usr/games/steamcmd /usr/local/bin/steamcmd
+    fi
+    command -v steamcmd >/dev/null || { error "SteamCMD 安装失败"; exit 1; }
     info "SteamCMD 安装完成"
 }
 
@@ -404,6 +406,9 @@ create_steam_user() {
         useradd -m -s /bin/bash "$STEAM_USER"
         info "用户 $STEAM_USER 创建完成"
     fi
+
+    mkdir -p "${STEAM_HOME}/.steam" "${PAL_SERVER_DIR}"
+    chown -R "${STEAM_USER}:${STEAM_USER}" "${STEAM_HOME}"
 
     # 游戏进程用户不得拥有 sudo 权限。
     # 设置用户资源限制
@@ -420,8 +425,8 @@ EOF
 # ==================== 下载帕鲁服务器 ====================
 run_steamcmd_palworld_update() {
     local steamcmd_args=(
-        +login anonymous
         +force_install_dir "${PAL_SERVER_DIR}"
+        +login anonymous
         +app_update 2394010 validate
         +quit
     )
@@ -443,11 +448,16 @@ run_steamcmd_palworld_update() {
 
 download_palserver_from_archive() {
     local archive="/tmp/PalServer.tar.gz"
+    local preserved_saved=""
 
     info "使用用户自备离线包安装 Palworld 服务端"
     info "离线包地址: ${PALSERVER_ARCHIVE_URL}"
 
     mkdir -p "$(dirname "${PAL_SERVER_DIR}")"
+    if [[ -d "$PAL_SAVE_DIR" ]]; then
+        preserved_saved=$(mktemp -d /tmp/palworld-saved.XXXXXX)
+        mv "$PAL_SAVE_DIR" "$preserved_saved/Saved"
+    fi
     if [[ -f "$PALSERVER_ARCHIVE_URL" ]]; then
         cp "$PALSERVER_ARCHIVE_URL" "$archive"
     else
@@ -455,18 +465,24 @@ download_palserver_from_archive() {
     fi
 
     if [[ -n "$PALSERVER_ARCHIVE_SHA256" ]]; then
-        echo "${PALSERVER_ARCHIVE_SHA256}  ${archive}" | sha256sum -c -
+        printf '%s  %s\n' "$PALSERVER_ARCHIVE_SHA256" "$archive" | sha256sum -c -
     fi
-
-    tar -xzf "$archive" -C "$(dirname "${PAL_SERVER_DIR}")"
+    tar -tzf "$archive" >/dev/null
+    if ! tar -xzf "$archive" -C "$(dirname "${PAL_SERVER_DIR}")"; then
+        [[ -z "$preserved_saved" ]] || { rm -rf "$PAL_SAVE_DIR"; mv "$preserved_saved/Saved" "$PAL_SAVE_DIR"; }
+        return 1
+    fi
+    if [[ -n "$preserved_saved" ]]; then
+        rm -rf "$PAL_SAVE_DIR"
+        mv "$preserved_saved/Saved" "$PAL_SAVE_DIR"
+        rmdir "$preserved_saved"
+    fi
     chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SERVER_DIR}"
 
     if [[ ! -f "${PAL_SERVER_DIR}/PalServer.sh" ]]; then
         error "离线包解压后未找到 PalServer.sh"
-        error "请确认压缩包内目录结构为 PalServer/PalServer.sh"
-        exit 1
+        return 1
     fi
-
     info "Palworld 服务端离线包安装完成"
 }
 
@@ -491,12 +507,13 @@ download_palserver() {
         retry=$((retry + 1))
         if [[ $retry -ge $max_retry ]]; then
             error "SteamCMD 下载失败，已重试 ${max_retry} 次"
-            error "国内服务器连接 Steam CDN 失败较常见，可尝试:"
+            error "若日志出现 Missing configuration，说明当前网络/账号无法匿名获取 AppID 2394010。"
+            error "可尝试:"
             error "  1) 使用代理: sudo env STEAMCMD_PROXY=socks5://127.0.0.1:7890 $0"
             error "  2) 使用 HTTP 代理: sudo env STEAMCMD_PROXY=http://127.0.0.1:7890 $0"
-            error "  3) 使用自备离线包: sudo env PALSERVER_ARCHIVE_URL=https://your-private-url/PalServer.tar.gz $0"
+            error "  3) 使用自备离线包: sudo env PALSERVER_ARCHIVE_URL=/path/PalServer.tar.gz PALSERVER_ARCHIVE_SHA256=<sha256> $0"
             error "也可手动执行:"
-            error "  sudo -u ${STEAM_USER} steamcmd +login anonymous +force_install_dir ${PAL_SERVER_DIR} +app_update 2394010 validate +quit"
+            error "  sudo -u ${STEAM_USER} steamcmd +force_install_dir ${PAL_SERVER_DIR} +login anonymous +app_update 2394010 validate +quit"
             exit 1
         fi
         warn "下载失败，${retry}/${max_retry} 次重试..."
@@ -513,82 +530,72 @@ download_palserver() {
 
 # ==================== 配置服务器 ====================
 configure_server() {
-
-    mkdir -p "${PAL_CONFIG_DIR}"
-    mkdir -p "${PAL_SAVE_DIR}/SaveGames"
-    mkdir -p "${PAL_SAVE_DIR}/Backup"
-
-    # 立即 chown：确保下方「首次启动生成配置」(若触发) 时 steam 用户能写入
-    # 不然 steam 进程在 root 属主目录下跑，ServerUID/配置文件写不进
+    mkdir -p "${PAL_CONFIG_DIR}" "${PAL_SAVE_DIR}/SaveGames" "${PAL_SAVE_DIR}/Backup"
     chown -R "${STEAM_USER}:${STEAM_USER}" "${PAL_SAVE_DIR}"
 
-    # 用官方默认配置作为基础（单行格式，含全部配置项）
-    # 写入后校验关键配置，避免上游格式变化导致静默失败。
-    local default_config="${PAL_SERVER_DIR}/DefaultPalWorldSettings.ini"
-    if [[ -f "$default_config" ]]; then
-        cp "$default_config" "${PAL_SETTINGS_FILE}"
-        # sed 修改关键项；用户输入先转义 sed replacement 元字符
-        local escaped_server_name escaped_admin_password escaped_server_password
-        escaped_server_name=$(printf '%s' "$SERVER_NAME" | sed 's/[&|\\]/\\&/g')
-        escaped_admin_password=$(printf '%s' "$ADMIN_PASSWORD" | sed 's/[&|\\]/\\&/g')
-        escaped_server_password=$(printf '%s' "$SERVER_PASSWORD" | sed 's/[&|\\]/\\&/g')
-        sed -i \
-            -e "s|ServerName=\"[^\"]*\"|ServerName=\"${escaped_server_name}\"|" \
-            -e "s|ServerDescription=\"[^\"]*\"|ServerDescription=\"Powered by Palworld Auto Installer\"|" \
-            -e "s|AdminPassword=\"[^\"]*\"|AdminPassword=\"${escaped_admin_password}\"|" \
-            -e "s|ServerPassword=\"[^\"]*\"|ServerPassword=\"${escaped_server_password}\"|" \
-            -e "s/ServerPlayerMaxNum=[0-9]*/ServerPlayerMaxNum=${MAX_PLAYERS}/" \
-            -e "s/PublicPort=[0-9]*/PublicPort=${DEFAULT_PORT}/" \
-            -e "s/RCONEnabled=[A-Za-z]*/RCONEnabled=True/" \
-            -e "s/RCONPort=[0-9]*/RCONPort=${RCON_PORT}/" \
-            -e "s/RESTAPIEnabled=[A-Za-z]*/RESTAPIEnabled=True/" \
-            -e "s/RESTAPIPort=[0-9]*/RESTAPIPort=${REST_API_PORT}/" \
-            "${PAL_SETTINGS_FILE}"
-        info "已从默认配置创建 PalWorldSettings.ini（单行格式 + sed 修改关键项）"
+    local had_config=0
+    [[ -s "${PAL_SETTINGS_FILE}" ]] && had_config=1
+    if (( had_config )) && [[ "$FORCE_CONFIG_REWRITE" != "1" ]]; then
+        info "保留现有 PalWorldSettings.ini（设置 FORCE_CONFIG_REWRITE=1 可重写）"
+        chown "${STEAM_USER}:${STEAM_USER}" "${PAL_SETTINGS_FILE}"
+        chmod 640 "${PAL_SETTINGS_FILE}"
+        return
     fi
 
-    local first_start_pid=""
-    if [[ ! -f "${PAL_SETTINGS_FILE}" ]]; then
-        info "首次启动以生成默认配置文件..."
-        cd "${PAL_SERVER_DIR}"
-        sudo -u "$STEAM_USER" ./PalServer.sh -useperfthreads -NoAsyncLoadingThread -UseMultithreadForDS &
-        first_start_pid=$!
-
-        local wait_count=0
-        while [[ ! -f "${PAL_SETTINGS_FILE}" ]] && [[ $wait_count -lt 45 ]]; do
+    local default_config="${PAL_SERVER_DIR}/DefaultPalWorldSettings.ini"
+    if [[ -s "$default_config" ]]; then
+        cp "$default_config" "${PAL_SETTINGS_FILE}"
+    else
+        info "默认配置缺失，短暂首次启动以生成配置..."
+        (cd "${PAL_SERVER_DIR}" && sudo -u "$STEAM_USER" ./PalServer.sh) &
+        local first_start_pid=$! wait_count=0
+        while [[ ! -s "${PAL_SETTINGS_FILE}" && $wait_count -lt 45 ]]; do
             sleep 2
             wait_count=$((wait_count + 1))
             kill -0 "$first_start_pid" 2>/dev/null || break
         done
-
         kill -SIGINT "$first_start_pid" 2>/dev/null || true
-        sleep 5
-        kill -KILL "$first_start_pid" 2>/dev/null || true
+        wait "$first_start_pid" 2>/dev/null || true
     fi
+    [[ -s "${PAL_SETTINGS_FILE}" ]] || { error "无法取得 PalWorldSettings.ini 基础配置"; exit 1; }
 
-    if [[ -f "${PAL_SETTINGS_FILE}" ]]; then
-        for expected in \
-            "AdminPassword=\"${ADMIN_PASSWORD}\"" \
-            "RCONEnabled=True" \
-            "RCONPort=${RCON_PORT}" \
-            "RESTAPIEnabled=True" \
-            "RESTAPIPort=${REST_API_PORT}"; do
-            if ! grep -qF "$expected" "${PAL_SETTINGS_FILE}"; then
-                error "配置写入校验失败: ${expected%%=*}"
-                exit 1
-            fi
-        done
-        chown "${STEAM_USER}:${STEAM_USER}" "${PAL_SETTINGS_FILE}"
-        chmod 640 "${PAL_SETTINGS_FILE}"
-        info "PalWorldSettings.ini 已校验并设为 640"
-        info "配置文件路径: ${PAL_SETTINGS_FILE}"
-    else
-        error "配置文件未生成，请检查服务器是否完整"
-        exit 1
-    fi
+    PAL_SETTINGS_FILE="$PAL_SETTINGS_FILE" SERVER_NAME="$SERVER_NAME" SERVER_PASSWORD="$SERVER_PASSWORD" \
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" MAX_PLAYERS="$MAX_PLAYERS" DEFAULT_PORT="$DEFAULT_PORT" \
+    RCON_PORT="$RCON_PORT" REST_API_PORT="$REST_API_PORT" python3 <<'PYCONFIG'
+import os, re
+path = os.environ['PAL_SETTINGS_FILE']
+text = open(path, encoding='utf-8-sig').read()
+values = {
+    'ServerName': os.environ['SERVER_NAME'],
+    'ServerDescription': 'Powered by Palworld Auto Installer',
+    'AdminPassword': os.environ['ADMIN_PASSWORD'],
+    'ServerPassword': os.environ['SERVER_PASSWORD'],
+    'ServerPlayerMaxNum': os.environ['MAX_PLAYERS'],
+    'PublicPort': os.environ['DEFAULT_PORT'],
+    'RCONEnabled': 'True', 'RCONPort': os.environ['RCON_PORT'],
+    'RESTAPIEnabled': 'True', 'RESTAPIPort': os.environ['REST_API_PORT'],
+}
+quoted = {'ServerName', 'ServerDescription', 'AdminPassword', 'ServerPassword'}
+for key, value in values.items():
+    rendered = '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', ' ') + '"' if key in quoted else value
+    pattern = rf'(?<![A-Za-z0-9_]){re.escape(key)}\s*=\s*(?:"(?:\\.|[^"\\])*"|[^,\r\n\)]*)'
+    replacement = f'{key}={rendered}'
+    text, count = re.subn(pattern, lambda _m, r=replacement: r, text, count=1)
+    if not count:
+        close = text.rfind(')')
+        if close < 0:
+            raise SystemExit(f'malformed settings: missing closing parenthesis while adding {key}')
+        prefix = ',' if text[:close].rstrip().endswith(('"', 'e', 'E', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) else ''
+        text = text[:close] + prefix + replacement + text[close:]
+open(path, 'w', encoding='utf-8', newline='').write(text)
+PYCONFIG
 
+    for expected in "RCONEnabled=True" "RCONPort=${RCON_PORT}" "RESTAPIEnabled=True" "RESTAPIPort=${REST_API_PORT}"; do
+        grep -qF "$expected" "${PAL_SETTINGS_FILE}" || { error "配置写入校验失败: $expected"; exit 1; }
+    done
+    chown "${STEAM_USER}:${STEAM_USER}" "${PAL_SETTINGS_FILE}"
     chmod 640 "${PAL_SETTINGS_FILE}"
-    info "存档与配置目录属主已修正为 ${STEAM_USER}"
+    info "PalWorldSettings.ini 已安全更新并校验"
 }
 
 # ==================== 创建启动脚本 ====================
@@ -760,41 +767,78 @@ create_backup_script() {
 
     cat > "$backup_script" << BACKUPSCRIPT
 #!/bin/bash
-# 幻兽帕鲁存档备份脚本
-
+set -euo pipefail
 BACKUP_DIR="${backup_dir}"
+PAL_SERVER_DIR="${PAL_SERVER_DIR}"
 SAVE_DIR="${PAL_SAVE_DIR}"
-CREDENTIALS_FILE="/etc/palworld/credentials.env"
-source "\$CREDENTIALS_FILE"
-RCON_PORT="\${RCON_PORT}"
-RCON_PASS="\${ADMIN_PASSWORD}"
-TIMESTAMP=\$(date +%Y%m%d_%H%M%S)
-BACKUP_FILE="\${BACKUP_DIR}/pal_backup_\${TIMESTAMP}.tar.gz"
-
+CREDENTIALS_FILE="${CREDENTIALS_FILE}"
+SERVICE="${SERVICE_NAME}"
+STEAM_USER="${STEAM_USER}"
+exec 9>/run/lock/palworld-backup.lock
+flock -n 9 || { echo "另一个备份/恢复任务正在运行" >&2; exit 1; }
 mkdir -p "\$BACKUP_DIR"
-
-# 备份前先通知服务器保存，确保内存中的存档落盘
-echo "正在保存存档..."
-/usr/local/bin/pal-rcon --port "\$RCON_PORT" --password "\$RCON_PASS" "Save" 2>/dev/null || \\
-    echo "[WARN] RCON 保存失败（服务器可能未启动），继续备份"
-sleep 3
-
-echo "正在压缩存档..."
-tar -czf "\$BACKUP_FILE" -C "\$SAVE_DIR" SaveGames 2>/dev/null
-
-if [[ \$? -eq 0 ]]; then
-    echo "[\$(date)] 备份成功: \$BACKUP_FILE"
-    # 保留最近30个备份
-    ls -t "\$BACKUP_DIR"/pal_backup_*.tar.gz 2>/dev/null | tail -n +31 | xargs -r rm -f
-    echo "[\$(date)] 清理旧备份完成"
-else
-    echo "[\$(date)] 备份失败!" >&2
-    exit 1
-fi
+is_running() { systemctl is-active --quiet "\$SERVICE"; }
+make_backup() {
+    local timestamp partial final
+    timestamp=\$(date +%Y%m%d_%H%M%S)
+    partial="\$BACKUP_DIR/.pal_backup_\${timestamp}.tar.gz.partial"
+    final="\$BACKUP_DIR/pal_backup_\${timestamp}.tar.gz"
+    if is_running; then
+        source "\$CREDENTIALS_FILE"
+        /usr/local/bin/pal-rcon --port "\$RCON_PORT" --password "\$ADMIN_PASSWORD" Save || true
+        sleep 3
+    fi
+    tar -czf "\$partial" -C "\$PAL_SERVER_DIR" Pal/Saved -C /etc/palworld credentials.env || { rm -f "\$partial"; return 1; }
+    tar -tzf "\$partial" >/dev/null || { rm -f "\$partial"; return 1; }
+    mv "\$partial" "\$final"
+    sha256sum "\$final" > "\$final.sha256"
+    echo "备份成功: \$final" >&2
+    printf '%s\n' "\$final"
+}
+validate_archive() {
+    local archive=\$1 member
+    tar -tzf "\$archive" >/dev/null || return 1
+    while IFS= read -r member; do
+        [[ "\$member" != /* && "\$member" != *'../'* && "\$member" != '..' ]] || return 1
+        case "\$member" in Pal/Saved|Pal/Saved/*|credentials.env) ;; *) return 1 ;; esac
+    done < <(tar -tzf "\$archive")
+}
+restore_backup() {
+    local archive=\$1 was_running=0 rollback tmp
+    [[ -f "\$archive" ]] || { echo "备份不存在: \$archive" >&2; return 2; }
+    [[ ! -f "\$archive.sha256" ]] || (cd "\$(dirname "\$archive")" && sha256sum -c "\$(basename "\$archive").sha256")
+    validate_archive "\$archive" || { echo "拒绝不安全或无效的备份包" >&2; return 1; }
+    is_running && was_running=1
+    rollback=\$(make_backup)
+    (( was_running )) && systemctl stop "\$SERVICE"
+    tmp=\$(mktemp -d)
+    if ! tar -xzf "\$archive" -C "\$tmp" --no-same-owner --no-same-permissions || [[ ! -d "\$tmp/Pal/Saved" ]]; then
+        rm -rf "\$tmp"; (( was_running )) && systemctl start "\$SERVICE"; return 1
+    fi
+    if ! mv "\$SAVE_DIR" "\$SAVE_DIR.restore-old" || ! cp -a "\$tmp/Pal/Saved" "\$SAVE_DIR"; then
+        rm -rf "\$SAVE_DIR"
+        [[ ! -d "\$SAVE_DIR.restore-old" ]] || mv "\$SAVE_DIR.restore-old" "\$SAVE_DIR"
+        rm -rf "\$tmp"; (( was_running )) && systemctl start "\$SERVICE"; return 1
+    fi
+    if [[ -f "\$tmp/credentials.env" ]] && ! install -m 640 -o root -g "\$STEAM_USER" "\$tmp/credentials.env" "\$CREDENTIALS_FILE"; then
+        rm -rf "\$SAVE_DIR"
+        mv "\$SAVE_DIR.restore-old" "\$SAVE_DIR"
+        rm -rf "\$tmp"; (( was_running )) && systemctl start "\$SERVICE"; return 1
+    fi
+    rm -rf "\$SAVE_DIR.restore-old" "\$tmp"
+    chown -R "\$STEAM_USER:\$STEAM_USER" "\$SAVE_DIR"
+    (( was_running )) && systemctl start "\$SERVICE"
+    echo "恢复完成；恢复前备份: \$rollback"
+}
+case "\${1:-backup}" in
+    backup) [[ \$# -le 1 ]] || exit 2; make_backup ;;
+    restore) [[ \$# -eq 2 ]] || { echo "用法: pal-backup restore <备份.tar.gz>" >&2; exit 2; }; restore_backup "\$2" ;;
+    *) echo "用法: pal-backup [backup|restore <备份.tar.gz>]" >&2; exit 2 ;;
+esac
 BACKUPSCRIPT
 
-    # 备份脚本含 RCON 密码，仅 steam 用户可读写执行
-    chown "${STEAM_USER}:${STEAM_USER}" "$backup_script"
+    # 备份/恢复需要读取凭证并管理服务，仅 root 可执行
+    chown root:root "$backup_script"
     chmod 700 "$backup_script"
 
     # 每6小时自动备份一次
@@ -804,8 +848,7 @@ Description=Palworld Server Save Backup
 
 [Service]
 Type=oneshot
-ExecStart=${backup_script}
-User=${STEAM_USER}
+ExecStart=${backup_script} backup
 EOF
 
     cat > "/etc/systemd/system/${SERVICE_NAME}-backup.timer" << EOF
@@ -846,23 +889,25 @@ def _pack(pkt_id, pkt_type, body):
     return struct.pack('<i', len(payload)) + payload
 
 
+def _read_exact(sock, count):
+    data = bytearray()
+    while len(data) < count:
+        chunk = sock.recv(count - len(data))
+        if not chunk:
+            raise ConnectionError('RCON server disconnected mid-packet')
+        data.extend(chunk)
+    return bytes(data)
+
+
 def _recv(sock):
-    size_data = b''
-    while len(size_data) < 4:
-        chunk = sock.recv(4 - len(size_data))
-        if not chunk:
-            return None
-        size_data += chunk
-    size = struct.unpack('<i', size_data)[0]
-    data = b''
-    while len(data) < size:
-        chunk = sock.recv(size - len(data))
-        if not chunk:
-            break
-        data += chunk
+    size = struct.unpack('<i', _read_exact(sock, 4))[0]
+    if size < 10 or size > 4096:
+        raise ValueError(f'invalid RCON packet size: {size}')
+    data = _read_exact(sock, size)
+    if data[-2:] != b'\x00\x00':
+        raise ValueError('malformed RCON packet terminator')
     pkt_id, pkt_type = struct.unpack('<ii', data[:8])
-    body = data[8:-2].decode('utf-8', errors='replace')
-    return pkt_id, pkt_type, body
+    return pkt_id, pkt_type, data[8:-2].decode('utf-8', errors='replace')
 
 
 def rcon(host, port, password, command, debug=False):
@@ -890,7 +935,8 @@ def rcon(host, port, password, command, debug=False):
                     break
                 sock.settimeout(0.5)  # 后续包短超时，快速结束
         except socket.timeout:
-            auth_ok = True  # 没收到 AUTH_RESPONSE 但也没收到 -1，假设认证成功
+            print('RCON 认证超时', file=sys.stderr)
+            return 1
         if not auth_ok:
             print('RCON 认证超时', file=sys.stderr)
             return 1
@@ -902,24 +948,34 @@ def rcon(host, port, password, command, debug=False):
         # ShowPlayers 等命令的响应可能被分片，或先发空 ack 再发实际数据
         sock.sendall(_pack(2, 2, command))
         bodies = []
+        response_ids = []
         sock.settimeout(3)  # 第一个包用较长超时等响应
         try:
             while len(bodies) < 20:
                 pkt_id, pkt_type, body = _recv(sock)
+                response_ids.append(pkt_id)
                 bodies.append(body)
                 if debug:
                     preview = body[:80].replace('\n', '\\n')
                     print(f'[DEBUG] 包 {len(bodies)}: type={pkt_type} len={len(body)} body={preview!r}', file=sys.stderr)
                 sock.settimeout(0.5)  # 后续包短超时，无新数据快速结束
         except socket.timeout:
-            pass
+            if not bodies:
+                raise TimeoutError('RCON command response timeout')
         if debug:
             non_empty = [b for b in bodies if b]
             print(f'[DEBUG] 命令响应: 共 {len(bodies)} 包, 非空 {len(non_empty)} 包', file=sys.stderr)
         output = '\n'.join(b for b in bodies if b)
+        if not bodies:
+            raise TimeoutError('RCON command response timeout')
+        if any(response_id != 2 for response_id in response_ids):
+            raise ValueError(f'unexpected RCON response id(s): {response_ids}')
         if output:
             print(output)
         return 0
+    except (OSError, ValueError, struct.error, TimeoutError) as exc:
+        print(f'RCON 协议错误: {exc}', file=sys.stderr)
+        return 1
     finally:
         sock.close()
 
@@ -973,6 +1029,7 @@ create_manager_script() {
     cat > "${MANAGER_SCRIPT}" << 'MANAGEREOF'
 #!/bin/bash
 # 幻兽帕鲁服务器管理脚本
+set -uo pipefail
 # 用法: pal-manager [命令]
 
 SERVICE="pal-server"
@@ -1006,6 +1063,7 @@ show_help() {
     echo "  logs-all    查看全部日志"
     echo "  update      更新服务器"
     echo "  backup      立即备份存档"
+    echo "  restore     安全恢复完整备份"
     echo "  config      编辑配置文件"
     echo "  rcon        发送 RCON 命令"
     echo "  players     查看在线玩家"
@@ -1019,9 +1077,9 @@ show_help() {
     echo ""
 }
 
-cmd_start()    { systemctl start "$SERVICE" && echo -e "${GREEN}服务器已启动${NC}"; }
+cmd_start()    { systemctl reset-failed "$SERVICE" 2>/dev/null || true; systemctl start "$SERVICE" && echo -e "${GREEN}服务器已启动${NC}"; }
 cmd_stop()     { systemctl stop "$SERVICE" && echo -e "${YELLOW}服务器已停止${NC}"; }
-cmd_restart()  { systemctl restart "$SERVICE" && echo -e "${GREEN}服务器已重启${NC}"; }
+cmd_restart()  { systemctl reset-failed "$SERVICE" 2>/dev/null || true; systemctl restart "$SERVICE" && echo -e "${GREEN}服务器已重启${NC}"; }
 cmd_status()   { systemctl status "$SERVICE" --no-pager; }
 
 cmd_logs()     { journalctl -u "$SERVICE" -f --no-pager; }
@@ -1052,7 +1110,9 @@ run_steamcmd_update() {
 
 cmd_update() {
     echo -e "${CYAN}正在更新服务器...${NC}"
-    systemctl stop "$SERVICE" 2>/dev/null
+    local was_running=0
+    systemctl is-active --quiet "$SERVICE" && was_running=1
+    (( was_running )) && systemctl stop "$SERVICE"
 
     local retry=0
     local max_retry=3
@@ -1060,20 +1120,23 @@ cmd_update() {
         retry=$((retry + 1))
         if [[ $retry -ge $max_retry ]]; then
             echo -e "${RED}SteamCMD 更新失败，已重试 ${max_retry} 次${NC}" >&2
-            echo -e "${YELLOW}国内服务器可尝试: sudo env STEAMCMD_PROXY=socks5://127.0.0.1:7890 pal-manager update${NC}" >&2
-            systemctl start "$SERVICE" 2>/dev/null
+            (( was_running )) && systemctl start "$SERVICE"
             return 1
         fi
         echo -e "${YELLOW}更新失败，${retry}/${max_retry} 次重试...${NC}"
-        sleep 5
     done
 
-    systemctl start "$SERVICE"
-    echo -e "${GREEN}更新完成${NC}"
+    (( was_running )) && systemctl start "$SERVICE"
+    echo -e "${GREEN}更新完成；服务原状态已恢复${NC}"
 }
 
 cmd_backup() {
-    /usr/local/bin/pal-backup
+    /usr/local/bin/pal-backup backup
+}
+
+cmd_restore() {
+    [[ $# -eq 1 ]] || { echo "用法: pal-manager restore <备份.tar.gz>" >&2; return 2; }
+    /usr/local/bin/pal-backup restore "$1"
 }
 
 cmd_config() {
@@ -1082,7 +1145,7 @@ cmd_config() {
 }
 
 cmd_rcon() {
-    if [[ -z "$1" ]]; then
+    if [[ -z "${1:-}" ]]; then
         echo "用法: pal-manager rcon <命令>"
         echo "v1.0 可用 RCON 命令:"
         echo "  Info                                    服务器信息"
@@ -1115,7 +1178,7 @@ cmd_broadcast() {
 }
 
 cmd_kick() {
-    if [[ -z "$1" ]]; then
+    if [[ -z "${1:-}" ]]; then
         echo "用法: pal-manager kick <SteamID>"
         echo "先用 pal-manager players 查看在线玩家 SteamID"
         return 1
@@ -1124,7 +1187,7 @@ cmd_kick() {
 }
 
 cmd_ban() {
-    if [[ -z "$1" ]]; then
+    if [[ -z "${1:-}" ]]; then
         echo "用法: pal-manager ban <SteamID>"
         echo "先用 pal-manager players 查看在线玩家 SteamID"
         return 1
@@ -1133,7 +1196,7 @@ cmd_ban() {
 }
 
 cmd_unban() {
-    if [[ -z "$1" ]]; then
+    if [[ -z "${1:-}" ]]; then
         echo "用法: pal-manager unban <SteamID>"
         return 1
     fi
@@ -1164,26 +1227,28 @@ cmd_info() {
     echo "配置文件:     $PAL_SERVER_DIR/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"
 }
 
-case "${1:-help}" in
-    start)      cmd_start ;;
-    stop)       cmd_stop ;;
-    restart)    cmd_restart ;;
-    status)     cmd_status ;;
-    logs)       cmd_logs ;;
-    logs-all)   cmd_logs_all ;;
-    update)     cmd_update ;;
-    backup)     cmd_backup ;;
-    config)     cmd_config ;;
+case "${1:-}" in
+    start)      [[ $# -eq 1 ]] && cmd_start ;;
+    stop)       [[ $# -eq 1 ]] && cmd_stop ;;
+    restart)    [[ $# -eq 1 ]] && cmd_restart ;;
+    status)     [[ $# -eq 1 ]] && cmd_status ;;
+    logs)       [[ $# -eq 1 ]] && cmd_logs ;;
+    logs-all)   [[ $# -eq 1 ]] && cmd_logs_all ;;
+    update)     [[ $# -eq 1 ]] && cmd_update ;;
+    backup)     [[ $# -eq 1 ]] && cmd_backup ;;
+    restore)    shift; cmd_restore "$@" ;;
+    config)     [[ $# -eq 1 ]] && cmd_config ;;
     rcon)       shift; cmd_rcon "$@" ;;
-    players)    cmd_players ;;
+    players)    [[ $# -eq 1 ]] && cmd_players ;;
     broadcast)  shift; cmd_broadcast "$@" ;;
     kick)       shift; cmd_kick "$@" ;;
     ban)        shift; cmd_ban "$@" ;;
     unban)      shift; cmd_unban "$@" ;;
-    save)       cmd_save ;;
-    memory)     cmd_memory ;;
-    info)       cmd_info ;;
-    *)          show_help ;;
+    save)       [[ $# -eq 1 ]] && cmd_save ;;
+    memory)     [[ $# -eq 1 ]] && cmd_memory ;;
+    info)       [[ $# -eq 1 ]] && cmd_info ;;
+    help|-h|--help) show_help ;;
+    *)          show_help >&2; exit 2 ;;
 esac
 MANAGEREOF
 
@@ -1202,25 +1267,38 @@ MANAGEREOF
 
 # ==================== 配置防火墙 ====================
 setup_firewall() {
-
     if command -v ufw &>/dev/null; then
-        ufw allow "${DEFAULT_PORT}/udp"  comment "Palworld Game Port"
-        ufw allow "${QUERY_PORT}/udp"   comment "Palworld Query Port"
-        info "已添加游戏端口规则；RCON ${RCON_PORT}/tcp 默认不向公网开放"
-        if ! ufw status 2>/dev/null | grep -qi "Status: active"; then
-            warn "UFW 规则已添加，但 UFW 当前未启用"
-        fi
+        ufw allow "${DEFAULT_PORT}/udp" comment "Palworld Game Port"
+        ufw allow "${QUERY_PORT}/udp" comment "Palworld Query Port"
+        ufw deny "${RCON_PORT}/tcp" comment "Block public Palworld RCON"
+        ufw deny "${REST_API_PORT}/tcp" comment "Block public Palworld REST"
+        ufw --force enable
+        ufw status | grep -qE "${RCON_PORT}/tcp.*DENY" || { error "RCON 防火墙拒绝规则验证失败"; exit 1; }
+        ufw status | grep -qE "${REST_API_PORT}/tcp.*DENY" || { error "REST 防火墙拒绝规则验证失败"; exit 1; }
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port="${DEFAULT_PORT}/udp"
         firewall-cmd --permanent --add-port="${QUERY_PORT}/udp"
+        firewall-cmd --permanent --add-rich-rule="rule family=ipv4 port port=${RCON_PORT} protocol=tcp reject"
+        firewall-cmd --permanent --add-rich-rule="rule family=ipv4 port port=${REST_API_PORT} protocol=tcp reject"
         firewall-cmd --reload
-        info "已开放游戏端口；RCON ${RCON_PORT}/tcp 默认不向公网开放"
     else
-        warn "未检测到防火墙工具 (ufw/firewalld)，请手动确认以下端口已开放:"
-        warn "  UDP ${DEFAULT_PORT} (游戏)"
-        warn "  UDP ${QUERY_PORT} (查询)"
-        warn "RCON TCP ${RCON_PORT} 请仅通过本机或 SSH 隧道使用"
+        error "未检测到已支持的主机防火墙；无法保证 RCON/REST 不暴露公网"
+        exit 1
     fi
+    info "已放行游戏/查询 UDP，并显式拒绝公网 RCON/REST TCP"
+}
+
+verify_private_listeners() {
+    local port listeners
+    for port in "$RCON_PORT" "$REST_API_PORT"; do
+        listeners=$(ss -H -ltn "sport = :$port" 2>/dev/null || true)
+        [[ -n "$listeners" ]] || { warn "端口 $port 尚未监听（服务器可能仍在初始化）"; continue; }
+        if grep -qE '(^|[[:space:]])(0\.0\.0\.0|\[::\]|\*):' <<<"$listeners"; then
+            info "端口 $port 监听所有接口，但主机防火墙已有显式公网拒绝规则"
+        else
+            info "端口 $port 仅监听受限地址"
+        fi
+    done
 }
 
 # ==================== 配置日志轮转 ====================
@@ -1349,6 +1427,7 @@ main() {
 
     check_root
     check_system
+    load_existing_credentials
     check_resources
     compute_memory_limits
     user_config
@@ -1442,6 +1521,7 @@ main() {
 
     run_step "启动服务器"
     start_server
+    verify_private_listeners
 
     show_result
 }

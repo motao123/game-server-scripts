@@ -1,6 +1,6 @@
 # 游戏服务器一键部署脚本
 
-纯 Shell 安装脚本，适用于 Ubuntu 22.04+ / Debian 11+。无需 Web 面板。
+纯 Shell 安装脚本，适用于 Ubuntu 22.04+ / Debian 11+ / Debian 13。无需 Web 面板。
 
 ## 支持的游戏
 
@@ -16,47 +16,74 @@
 ```bash
 git clone https://cnb.cool/code_free/game-server-scripts.git
 cd game-server-scripts
-
 chmod +x *.sh
-sudo ./palworld-server-install.sh      # 或 minecraft / valheim / terraria
+
+# 交互安装
+sudo ./minecraft-server-install.sh
+
+# 非交互安装示例
+sudo NONINTERACTIVE=1 SERVER_TYPE=paper MC_MEMORY=2G MC_ENABLE_RCON=false ./minecraft-server-install.sh
+sudo NONINTERACTIVE=1 TS_VERSION=1455 TS_MEMORY_MAX=2G ./terraria-server-install.sh
+sudo NONINTERACTIVE=1 VH_MEMORY_MAX=2G VH_SERVER_PASSWORD=testpass ./valheim-server-install.sh
+sudo NONINTERACTIVE=1 ADMIN_PASSWORD='至少12位强密码' ./palworld-server-install.sh
 ```
+
+## 管理命令（全部可用）
+
+| 游戏 | 命令 |
+|------|------|
+| Minecraft | `mc-manager start\|stop\|restart\|status\|logs\|backup\|restore\|update\|config\|info\|memory\|cmd\|players\|say\|whitelist\|plugin\|mod\|datapack\|resourcepack\|packs` |
+| Palworld | `pal-manager start\|stop\|restart\|status\|logs\|logs-all\|backup\|restore\|update\|config\|rcon\|players\|broadcast\|kick\|ban\|unban\|save\|memory\|info` |
+| Valheim | `valheim-manager start\|stop\|restart\|status\|logs\|backup\|restore\|update\|config\|world\|info\|memory` |
+| Terraria | `terraria-manager start\|stop\|restart\|status\|logs\|backup\|restore\|update\|config\|world\|info\|memory` |
+
+说明：
+
+- 帮助中列出的命令都是可执行命令；未知命令与缺参会返回非零。
+- Minecraft `plugin` 仅 Paper；`mod` 仅 Fabric/Forge；Vanilla 会明确拒绝。
+- 备份支持 `restore latest|<path>`，带 SHA256 校验与回滚。
+- 重复安装默认保留配置/凭证/世界，除非设置 `FORCE_CONFIG_REWRITE=1`。
 
 ## 安全说明
 
-- **RCON 默认不对公网放行**，安装脚本只添加游戏端口的防火墙规则；请通过本机或 SSH 隧道使用 RCON。
-- 管理员/服务器密码默认生成随机强密码，安装结束时打印一次；凭证写入 `/etc/<game>/credentials.env`，仅 root 或对应游戏组可读。
-- 游戏进程用户**不会**被授予 sudo。
-- 云服务器仍需在控制台安全组放行游戏端口。
+- RCON 默认关闭（Minecraft）或仅本机可用；Palworld 安装后会显式拒绝公网 25575/8212。
+- 凭证写入 `/etc/<game>/credentials.env`，仅 root 或对应游戏组可读。
+- 游戏进程用户不会被授予 sudo。
+- 云服务器仍需在安全组放行游戏端口。
 
-## 常用管理命令
-
-| 游戏 | 管理命令 |
-|------|----------|
-| Palworld | `pal-manager start\|stop\|restart\|status\|logs\|backup\|update\|players\|info` |
-| Minecraft | `mc-manager start\|stop\|restart\|status\|logs\|console\|backup\|update\|info` |
-| Valheim | `valheim-manager start\|stop\|restart\|status\|logs\|backup\|update\|info` |
-| Terraria | `terraria-manager start\|stop\|restart\|status\|logs\|console\|backup\|info` |
-
-## 环境变量（可选）
-
-### Palworld
-
-| 变量 | 说明 |
-|------|------|
-| `STEAMCMD_URL` | SteamCMD 安装包 URL 或本地路径 |
-| `STEAMCMD_PROXY` | SteamCMD 代理，如 `socks5://127.0.0.1:7890` |
-| `PALSERVER_ARCHIVE_URL` | 自备服务端离线包 |
-| `PALSERVER_ARCHIVE_SHA256` | 离线包 SHA256（推荐） |
-| `ADMIN_PASSWORD` | 预置管理员密码（否则自动生成） |
-| `SERVER_PASSWORD` | 进服密码（可空） |
-| `NONINTERACTIVE=1` | 跳过交互，使用默认/环境变量 |
+## 环境变量（常用）
 
 ### 通用
 
 | 变量 | 说明 |
 |------|------|
 | `NONINTERACTIVE=1` | 非交互安装 |
-| 各脚本内端口/名称变量 | 可在运行前 `export` 覆盖默认值 |
+| `FORCE_CONFIG_REWRITE=1` | 强制重写配置/凭证 |
+
+### Minecraft
+
+| 变量 | 说明 |
+|------|------|
+| `SERVER_TYPE` | `paper` / `vanilla` / `fabric` / `forge` |
+| `MC_VERSION` | 精确游戏版本 |
+| `MC_MEMORY` / `MC_MEMORY_MIN` | JVM 内存 |
+| `MC_ENABLE_RCON` | `true` 开启 RCON（默认 `false`） |
+
+### Palworld
+
+| 变量 | 说明 |
+|------|------|
+| `ADMIN_PASSWORD` | 管理员密码（至少 12 位） |
+| `STEAMCMD_PROXY` | SteamCMD 代理 |
+| `PALSERVER_ARCHIVE_URL` | 自备离线包（当前机房匿名拉取 AppID 2394010 失败时使用） |
+| `PALSERVER_ARCHIVE_SHA256` | 离线包校验 |
+
+### Terraria / Valheim
+
+| 变量 | 说明 |
+|------|------|
+| `TS_VERSION` | Terraria 官方版本，默认稳定 `1455` |
+| `VH_SERVER_PASSWORD` | Valheim 密码（至少 5 位） |
 
 ## 许可证
 
